@@ -1,0 +1,30 @@
+[project]
+name = "tidal-sync"
+version = "1.0.0"
+description = "A powerful, modern CLI tool to backup, restore, and clone full Tidal libraries."
+readme = "README.md"
+license = { text = "AGPL-3.0-or-later" }
+requires-python = ">=3.12"
+dependencies = [
+    "tidalapi>=0.8.9",
+    "typer>=0.12.1",
+    "pydantic>=2.12.2",
+    "rich>=14.2.0",
+]
+
+[project.scripts]
+tidal-sync = "tidal_sync.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tidal_sync"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

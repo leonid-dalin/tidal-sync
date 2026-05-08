@@ -91,7 +91,7 @@ uv run tidal-sync import ./my_tidal_backup
 
 ### 4. Clear Library (`clear`)
 
-*️*⚠Destructive Action:** Wipes specific categories from your account. It will ask for confirmation before deleting.
+⚠ **Destructive Action:** Wipes specific categories from your account. It will ask for confirmation before deleting.
 
 ```bash 
 uv run tidal-sync clear playlists

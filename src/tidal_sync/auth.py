@@ -86,7 +86,7 @@ def get_token_path(profile: str) -> Path:
     return CONFIG_DIR / f"{profile}.json"
 
 
-def _get_all_profiles() -> dict:
+def _get_all_profiles() -> dict[str, int]:
     """
     Scan the configuration directory and map profile names to their Tidal User IDs.
 
@@ -97,7 +97,7 @@ def _get_all_profiles() -> dict:
         dict: A dictionary mapping profile names (str) to Tidal User IDs (int).
               Returns an empty dictionary if the config directory is missing or empty.
     """
-    profiles = {}
+    profiles: dict[str, int] = {}
     if not CONFIG_DIR.exists(): return profiles
 
     for file in CONFIG_DIR.glob("*.json"):
@@ -107,13 +107,12 @@ def _get_all_profiles() -> dict:
                 if 'user_id' in data:
                     profiles[file.stem] = data['user_id']
         except (json.JSONDecodeError, OSError):
-            # Gracefully ignore malformed or inaccessible token files
-            continue
+            continue    # Gracefully ignore malformed or inaccessible token files
 
     return profiles
 
 
-def _save_session_to_disk(session: tidalapi.Session, token_file: Path, profile: str):
+def _save_session_to_disk(session: tidalapi.Session, token_file: Path) -> None:
     """
     Extract OAuth tokens from an active session and securely save them to disk.
 
@@ -179,7 +178,7 @@ def get_session(profile: str = "default") -> tidalapi.Session:
 
             if session.check_login():
                 # Re-save to disk to persist refreshed tokens handled by tidalapi
-                _save_session_to_disk(session, token_file, profile)
+                _save_session_to_disk(session, token_file)
                 console.print(f"[green]Authenticated as profile: [bold]{profile}[/bold][/green]")
                 return session
         except (json.JSONDecodeError, KeyError, ValueError, OSError):
@@ -197,20 +196,16 @@ def get_session(profile: str = "default") -> tidalapi.Session:
 
     # 3. Collision Detection: Check if this Tidal account is already tied to another profile
     existing_profiles = _get_all_profiles()
-    current_user_id = user.id
-    for existing_profile, existing_user_id in existing_profiles.items():
-        if existing_profile != profile and existing_user_id == current_user_id:
-            console.print(
-                f"\n[bold red]⚠️ WARNING:[/bold red] You just logged into the same Tidal account used by the '{existing_profile}' profile!")
-            console.print("[yellow]For account cloning, you need to log into a *different* Tidal account.[/yellow]\n")
+    if any(p != profile and uid == user.id for p, uid in existing_profiles.items()):
+        console.print(f"\n[bold red]⚠️ WARNING:[/bold red] Account collision detected!")
 
     # 4. Save and return
-    _save_session_to_disk(session, token_file, profile)
+    _save_session_to_disk(session, token_file)
     console.print(f"[green]Successfully saved profile '{profile}'![/green]")
     return session
 
 
-def secure_delete_token(profile: str = "default"):
+def secure_delete_token(profile: str = "default") -> None:
     """
     Securely clear and remove the session token file for a specific profile.
 

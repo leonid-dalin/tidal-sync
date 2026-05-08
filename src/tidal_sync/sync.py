@@ -44,6 +44,8 @@ from .models import TrackRow, AlbumRow, ArtistRow
 
 console = Console()
 T = TypeVar('T', bound=BaseModel)
+DELAY = 0.1
+CHUNK_SIZE = 50  # Array Chunking for large playlists to prevent HTTP 413 Payload Too Large
 
 
 def _fetch_all(api_method: Any, **kwargs: Any) -> list[Any]:
@@ -105,6 +107,7 @@ def parse_csv(file_path: Path, model_class: type[T]) -> list[T]:
     with open(file_path, mode='r', encoding='utf-8-sig') as f:
         reader = csv.DictReader(f)
         for row in reader:
+            row.pop(None, None)
             try:
                 items.append(model_class(**row))
             except ValidationError as e:
@@ -304,21 +307,33 @@ def _import_tracks(session: tidalapi.Session, file_path: Path, report_records: l
                                        "artist": track.artist_name, "source_file": file_path.name,
                                        "details": "Search yielded 0 results"})
 
-            time.sleep(0.5)  # Polite delay between API hits
+            time.sleep(DELAY)
             progress.advance(task)
 
     if track_ids_to_add:
         if is_favorites and hasattr(user, 'favorites'):
-            for tid in track_ids_to_add:
-                user.favorites.add_track(tid)
-                time.sleep(0.1)
+            console.print(f"\n[cyan]Adding {len(track_ids_to_add)} tracks to Liked Songs...[/cyan]")
+            with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(),
+                          TaskProgressColumn(), console=console) as progress:
+                add_task = progress.add_task("Uploading...", total=len(track_ids_to_add))
+                for tid in track_ids_to_add:
+                    try:
+                        user.favorites.add_track(tid)
+                    except Exception as _:
+                        progress.console.print(
+                            f"[yellow]  ⚠️ Skipping track ID {tid}: Tidal API rejected the addition (likely region-locked)[/yellow]")
+                    time.sleep(DELAY)
+                    progress.advance(add_task)
         elif playlist:
-            # Array Chunking for large playlists to prevent HTTP 413 Payload Too Large
-            CHUNK_SIZE = 50
             for i in range(0, len(track_ids_to_add), CHUNK_SIZE):
                 chunk = track_ids_to_add[i:i + CHUNK_SIZE]
-                playlist.add(chunk)
-                time.sleep(0.5)
+                try:
+                    playlist.add(chunk)
+                    playlist = session.playlist(playlist.id)
+                except Exception as _:
+                    console.print(
+                        f"[yellow]  ⚠️ Failed to add a chunk to '{playlist.name}'. A track in this batch may be region-locked.[/yellow]")
+                time.sleep(DELAY)
 
         console.print(f"[green]Added {len(track_ids_to_add)} NEW tracks![/green]")
 
@@ -355,7 +370,7 @@ def _import_albums(session: tidalapi.Session, file_path: Path, report_records: l
                                        "artist": album.artist_name, "source_file": file_path.name,
                                        "details": "Search yielded 0 results"})
 
-            time.sleep(0.5)
+            time.sleep(DELAY)
             progress.advance(task)
 
 
@@ -392,7 +407,7 @@ def _import_artists(session: tidalapi.Session, file_path: Path, report_records: 
                     {"status": "Failed (Not Found)", "type": "Artist", "name": artist.artist_name, "artist": "N/A",
                      "source_file": file_path.name, "details": "Search yielded 0 results"})
 
-            time.sleep(0.5)
+            time.sleep(DELAY)
             progress.advance(task)
 
 
@@ -412,27 +427,27 @@ def clear_library(session: tidalapi.Session, target: str):
         console.print(f"[cyan]Deleting {len(playlists)} playlists...[/cyan]")
         for p in playlists:
             p.delete()
-            time.sleep(0.1)
+            time.sleep(DELAY)
 
     if target in ["all", "tracks"]:
         tracks = _fetch_all(user.favorites.tracks)
         console.print(f"[cyan]Removing {len(tracks)} liked songs...[/cyan]")
         for t in tracks:
             user.favorites.remove_track(t.id)
-            time.sleep(0.1)
+            time.sleep(DELAY)
 
     if target in ["all", "albums"]:
         albums = _fetch_all(user.favorites.albums)
         console.print(f"[cyan]Removing {len(albums)} liked albums...[/cyan]")
         for a in albums:
             user.favorites.remove_album(a.id)
-            time.sleep(0.1)
+            time.sleep(DELAY)
 
     if target in ["all", "artists"]:
         artists = _fetch_all(user.favorites.artists)
         console.print(f"[cyan]Unfollowing {len(artists)} artists...[/cyan]")
         for art in artists:
             user.favorites.remove_artist(art.id)
-            time.sleep(0.1)
+            time.sleep(DELAY)
 
     console.print(f"[bold green]Successfully cleared '{target}' from library.[/bold green]")

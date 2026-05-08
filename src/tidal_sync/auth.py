@@ -231,7 +231,7 @@ def secure_delete_token(profile: str = "default") -> None:
         file_size = token_file.stat().st_size
 
         # Open in binary update mode to perform an in-place logical clear
-        with open(token_file, "ba+") as f:
+        with open(token_file, "r+b") as f:
             # Pass 1: Overwrite with null bytes
             f.seek(0)
             f.write(b'\x00' * file_size)

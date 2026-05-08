@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Annotated
 from rich.console import Console
 
-from .auth import get_session, secure_delete_token
+from .auth import get_session, secure_delete_token, _get_all_profiles
 from .sync import import_target, export_playlists, clear_library
 
 app = typer.Typer(help="Modern CLI for managing, importing, exporting, and cloning Tidal libraries.")
@@ -122,6 +122,22 @@ def clear(
     session = get_session(profile)
     clear_library(session, target)
 
+
+@app.command(name="profiles")
+def list_profiles() -> None:
+    """
+    List all authenticated Tidal profiles saved on this machine.
+    """
+    profiles = _get_all_profiles()
+
+    if not profiles:
+        console.print("[yellow]No profiles found. Use 'tidal-sync login' to authenticate.[/yellow]")
+        return
+
+    console.print("\n[bold cyan]🌊 Saved Tidal Profiles:[/bold cyan]")
+    for profile_name, user_id in profiles.items():
+        console.print(f"  • [bold green]{profile_name}[/bold green] (User ID: {user_id})")
+    console.print("")
 
 if __name__ == "__main__":
     app()

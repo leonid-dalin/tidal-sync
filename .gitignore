@@ -16,6 +16,7 @@ __pycache__/
 *$py.class
 .venv/
 uv.lock
+.env
 
 # --- OS & IDE ---
 .DS_Store

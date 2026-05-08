@@ -136,8 +136,9 @@ def _save_session_to_disk(session: tidalapi.Session, token_file: Path, profile: 
     with open(token_file, 'w') as f:
         json.dump(token_data, f)
 
-    # Enforce strict file permissions: Read/Write for Owner ONLY
-    os.chmod(token_file, stat.S_IRUSR | stat.S_IWUSR)
+    # Enforce strict file permissions: Read/Write for Owner ONLY (Linux/macOS)
+    if os.name == "posix":
+        os.chmod(token_file, stat.S_IRUSR | stat.S_IWUSR)
 
 
 def get_session(profile: str = "default") -> tidalapi.Session:

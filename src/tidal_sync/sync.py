@@ -35,7 +35,7 @@ import time
 from datetime import datetime
 import tidalapi
 from pathlib import Path
-from typing import Dict, List, TypeVar, Type, Any, Optional, cast
+from typing import TypeVar, Any, cast
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.console import Console
 from pydantic import BaseModel, ValidationError
@@ -46,7 +46,7 @@ console = Console()
 T = TypeVar('T', bound=BaseModel)
 
 
-def _fetch_all(api_method: Any, **kwargs: Any) -> List[Any]:
+def _fetch_all(api_method: Any, **kwargs: Any) -> list[Any]:
     """
     Exhaustively fetch paginated items from a Tidal API endpoint.
 
@@ -59,7 +59,7 @@ def _fetch_all(api_method: Any, **kwargs: Any) -> List[Any]:
         **kwargs: Additional arguments to pass to the API method.
 
     Returns:
-        List[Any]: A complete list of all items from the endpoint.
+        list[Any]: A complete list of all items from the endpoint.
     """
     items = []
     offset = 0
@@ -89,16 +89,16 @@ def _fetch_all(api_method: Any, **kwargs: Any) -> List[Any]:
     return items
 
 
-def parse_csv(file_path: Path, model_class: Type[T]) -> List[T]:
+def parse_csv(file_path: Path, model_class: type[T]) -> list[T]:
     """
     Read and validate a CSV file into Pydantic models.
 
     Args:
         file_path (Path): The location of the CSV file.
-        model_class (Type[T]): The Pydantic model to validate the rows against.
+        model_class (type[T]): The Pydantic model to validate the rows against.
 
     Returns:
-        List[T]: A list of validated row objects. Malformed rows are skipped and logged.
+        list[T]: A list of validated row objects. Malformed rows are skipped and logged.
     """
     items = []
     # Using utf-8-sig to safely handle Byte Order Marks (BOM) from Windows/Excel exports
@@ -112,7 +112,7 @@ def parse_csv(file_path: Path, model_class: Type[T]) -> List[T]:
     return items
 
 
-def export_playlists(session: tidalapi.Session, output_dir: Path):
+def export_playlists(session: tidalapi.Session, output_dir: Path) -> None:
     """
     Download a user's entire Tidal library to local CSV files.
 
@@ -187,7 +187,7 @@ def export_playlists(session: tidalapi.Session, output_dir: Path):
 
 # --- IMPORT ARCHITECTURE ---
 
-def import_target(session: tidalapi.Session, target_path: Path, target_playlist_name: Optional[str] = None):
+def import_target(session: tidalapi.Session, target_path: Path, target_playlist_name: str | None = None) -> None:
     """
     Route a file or directory into the Tidal library.
 
@@ -198,9 +198,9 @@ def import_target(session: tidalapi.Session, target_path: Path, target_playlist_
     Args:
         session (tidalapi.Session): The active Tidal connection.
         target_path (Path): A specific CSV file or a directory containing multiple CSVs.
-        target_playlist_name (Optional[str]): Override name for single-file playlist imports.
+        target_playlist_name (str | None): Override name for single-file playlist imports.
     """
-    report_records: List[Dict[str, str]] = []
+    report_records: list[dict[str, str]] = []
 
     if target_path.is_file():
         if target_path.suffix.lower() == '.csv':
@@ -237,8 +237,7 @@ def import_target(session: tidalapi.Session, target_path: Path, target_playlist_
         console.print(f"  • Report saved to: [underline]{report_file}[/underline]")
 
 
-def _route_and_import(session: tidalapi.Session, file_path: Path, fallback_name: Optional[str],
-                      report_records: List[Dict]):
+def _route_and_import(session: tidalapi.Session, file_path: Path, fallback_name: str | None, report_records: list[dict]) -> None:
     """Internal router directing specific CSV files to their respective import handlers."""
     filename = file_path.name
     if filename == "Liked Albums.csv":
@@ -252,8 +251,8 @@ def _route_and_import(session: tidalapi.Session, file_path: Path, fallback_name:
         _import_tracks(session, file_path, report_records, is_favorites=False, playlist_name=p_name)
 
 
-def _import_tracks(session: tidalapi.Session, file_path: Path, report_records: List[Dict], is_favorites: bool = False,
-                   playlist_name: Optional[str] = None):
+def _import_tracks(session: tidalapi.Session, file_path: Path, report_records: list[dict], is_favorites: bool = False,
+                   playlist_name: str | None = None):
     """Parse a track CSV, match entries against the Tidal database, and add them to the library."""
     tracks = parse_csv(file_path, TrackRow)
     if not tracks: return
@@ -324,7 +323,7 @@ def _import_tracks(session: tidalapi.Session, file_path: Path, report_records: L
         console.print(f"[green]Added {len(track_ids_to_add)} NEW tracks![/green]")
 
 
-def _import_albums(session: tidalapi.Session, file_path: Path, report_records: List[Dict]):
+def _import_albums(session: tidalapi.Session, file_path: Path, report_records: list[dict]):
     """Parse an album CSV, match entries against the Tidal database, and add them to favourites."""
     albums = parse_csv(file_path, AlbumRow)
     if not albums: return
@@ -360,7 +359,7 @@ def _import_albums(session: tidalapi.Session, file_path: Path, report_records: L
             progress.advance(task)
 
 
-def _import_artists(session: tidalapi.Session, file_path: Path, report_records: List[Dict]):
+def _import_artists(session: tidalapi.Session, file_path: Path, report_records: list[dict]):
     """Parse an artist CSV, match entries against the Tidal database, and add them to favourites."""
     artists = parse_csv(file_path, ArtistRow)
     if not artists: return

@@ -31,7 +31,6 @@ Example:
 """
 
 from pydantic import BaseModel, Field, AliasChoices, ConfigDict
-from typing import Optional
 
 
 class TrackRow(BaseModel):
@@ -44,22 +43,22 @@ class TrackRow(BaseModel):
     Attributes:
         track_name (str): The name of the track.
         artist_name (str): The track artist. Can contain multiple artists separated by commas.
-        album (Optional[str]): The album name.
-        playlist_name (Optional[str]): The destination or source playlist.
-        isrc (Optional[str]): The International Standard Recording Code for high-fidelity matching.
-        tidal_id (Optional[str]): A direct Tidal database ID.
+        album (str | none): The album name.
+        playlist_name (str | none): The destination or source playlist.
+        isrc (str | none): The International Standard Recording Code for high-fidelity matching.
+        tidal_id (str | none): A direct Tidal database ID.
     """
     model_config = ConfigDict(populate_by_name=True)
 
     # Aliases handle both Exportify and the TuneMyMusic formats
     track_name: str = Field(validation_alias=AliasChoices("Track name", "Track Name", "track_name"))
     artist_name: str = Field(validation_alias=AliasChoices("Artist name", "Artist Name(s)", "artist_name"))
-    album: Optional[str] = Field(default=None, validation_alias=AliasChoices("Album", "album"))
-    playlist_name: Optional[str] = Field(default=None, validation_alias=AliasChoices("Playlist name", "playlist_name"))
+    album: str | None = Field(default=None, validation_alias=AliasChoices("Album", "album"))
+    playlist_name: str | None = Field(default=None, validation_alias=AliasChoices("Playlist name", "playlist_name"))
 
     # High-fidelity matching fields
-    isrc: Optional[str] = Field(default=None, validation_alias=AliasChoices("ISRC", "isrc"))
-    tidal_id: Optional[str] = Field(default=None, validation_alias=AliasChoices("Tidal - id", "tidal_id"))
+    isrc: str | None = Field(default=None, validation_alias=AliasChoices("ISRC", "isrc"))
+    tidal_id: str | None = Field(default=None, validation_alias=AliasChoices("Tidal - id", "tidal_id"))
 
     @property
     def search_query(self) -> str:
@@ -83,13 +82,12 @@ class AlbumRow(BaseModel):
     Attributes:
         album_name (str): The name of the album.
         artist_name (str): The primary artist of the album.
-        tidal_id (Optional[str]): A direct Tidal database ID.
+        tidal_id (str | none): A direct Tidal database ID.
     """
     model_config = ConfigDict(populate_by_name=True)
     album_name: str = Field(validation_alias=AliasChoices("Album name", "album_name"))
     artist_name: str = Field(validation_alias=AliasChoices("Artist name", "artist_name"))
-    tidal_id: Optional[str] = Field(default=None, validation_alias=AliasChoices("Tidal - id", "tidal_id"))
-
+    tidal_id: str | None = Field(default=None, validation_alias=AliasChoices("Tidal - id", "tidal_id"))
 
 class ArtistRow(BaseModel):
     """
@@ -97,8 +95,8 @@ class ArtistRow(BaseModel):
 
     Attributes:
         artist_name (str): The name of the artist.
-        tidal_id (Optional[str]): A direct Tidal database ID.
+        tidal_id (str | none): A direct Tidal database ID.
     """
     model_config = ConfigDict(populate_by_name=True)
     artist_name: str = Field(validation_alias=AliasChoices("Artist name", "artist_name"))
-    tidal_id: Optional[str] = Field(default=None, validation_alias=AliasChoices("Tidal - id", "tidal_id"))
+    tidal_id: str | None = Field(default=None, validation_alias=AliasChoices("Tidal - id", "tidal_id"))

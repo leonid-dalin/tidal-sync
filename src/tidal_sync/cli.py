@@ -29,6 +29,7 @@ Example:
 
 import typer
 from pathlib import Path
+from typing import Annotated
 from rich.console import Console
 
 from .auth import get_session, secure_delete_token
@@ -39,7 +40,9 @@ console = Console()
 
 
 @app.command()
-def login(profile: str = typer.Option("default", "--profile", "-p", help="Profile name for dual-account management")):
+def login(
+    profile: Annotated[str, typer.Option("--profile", "-p", help="Profile name for dual-account management")] = "default"
+) -> None:
     """
     Authenticate a Tidal account and save it to a local profile.
 
@@ -50,7 +53,9 @@ def login(profile: str = typer.Option("default", "--profile", "-p", help="Profil
 
 
 @app.command()
-def logout(profile: str = typer.Option("default", "--profile", "-p", help="Profile name to wipe")):
+def logout(
+    profile: Annotated[str, typer.Option("--profile", "-p", help="Profile name to wipe")] = "default"
+) -> None:
     """
     Securely delete session credentials for a specific profile.
 
@@ -61,10 +66,10 @@ def logout(profile: str = typer.Option("default", "--profile", "-p", help="Profi
 
 @app.command(name="import")
 def import_data(
-        target_path: Path = typer.Argument(..., help="Path to a CSV file OR a directory", exists=True),
-        name: str = typer.Option(None, "--name", "-n", help="Target playlist name"),
-        profile: str = typer.Option("default", "--profile", "-p", help="Which account profile to import into")
-):
+    target_path: Annotated[Path, typer.Argument(help="Path to a CSV file OR a directory", exists=True)],
+    name: Annotated[str | None, typer.Option("--name", "-n", help="Target playlist name")] = None,
+    profile: Annotated[str, typer.Option("--profile", "-p", help="Which account profile to import into")] = "default"
+) -> None:
     """
     Import CSVs into Tidal.
 
@@ -77,9 +82,9 @@ def import_data(
 
 @app.command(name="export")
 def export_all(
-        output_dir: Path = typer.Option(Path("./exports"), "--out", "-o", help="Output directory"),
-        profile: str = typer.Option("default", "--profile", "-p", help="Which account profile to export from")
-):
+    output_dir: Annotated[Path, typer.Option("--out", "-o", help="Output directory")] = Path("./exports"),
+    profile: Annotated[str, typer.Option("--profile", "-p", help="Which account profile to export from")] = "default"
+) -> None:
     """
     Download all Tidal playlists and favourites to CSV files.
 
@@ -91,10 +96,10 @@ def export_all(
 
 @app.command()
 def clear(
-        target: str = typer.Argument(..., help="What to clear: 'all', 'tracks', 'albums', 'artists', 'playlists'"),
-        profile: str = typer.Option("default", "--profile", "-p", help="Which account profile to clear"),
-        force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt")
-):
+    target: Annotated[str, typer.Argument(help="What to clear: 'all', 'tracks', 'albums', 'artists', 'playlists'")],
+    profile: Annotated[str, typer.Option("--profile", "-p", help="Which account profile to clear")] = "default",
+    force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt")] = False
+) -> None:
     """
     Destructively wipe data from a Tidal account.
 

@@ -14,39 +14,29 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # Contact: infoLeonid@protonMail.com
-
-"""
-Data validation schemas for parsing Tidal library CSVs.
-
-This module uses Pydantic to standardise inputs from external platforms
-like Exportify or TuneMyMusic. By mapping varying column headers to
-consistent field names, it catches malformed data before the Tidal API
-ever sees it.
-
-Example:
-    >>> from models import TrackRow
-    >>> row = TrackRow(**{"Track name": "Helena", "Artist Name(s)": "My Chemical Romance"})
-    >>> print(row.search_query)
-    'Helena My Chemical Romance'
-"""
-
 from pydantic import BaseModel, Field, AliasChoices, ConfigDict
 
 
 class TrackRow(BaseModel):
     """
-    Schema for parsing an individual music track.
+        Parses an individual music track.
 
-    It maps legacy export formats to our required fields and computes
-    clean text queries when direct database ID matching fails.
+        This model maps legacy export formats (like Exportify or TuneMyMusic) to
+        our required fields. It also computes clean text queries when direct
+        database ID matching fails.
 
-    Attributes:
-        track_name (str): The name of the track.
-        artist_name (str): The track artist. Can contain multiple artists separated by commas.
-        album (str | none): The album name.
-        playlist_name (str | none): The destination or source playlist.
-        isrc (str | none): The International Standard Recording Code for high-fidelity matching.
-        tidal_id (str | none): A direct Tidal database ID.
+        Attributes:
+            track_name (str): The name of the track.
+            artist_name (str): The track artist. Multiple artists are comma-separated.
+            album (str | None): The album name.
+            playlist_name (str | None): The destination or source playlist.
+            isrc (str | None): The International Standard Recording Code for high-fidelity matching.
+            tidal_id (str | None): A direct Tidal database ID.
+
+        Example:
+            >>> row = TrackRow(**{"Track name": "Helena", "Artist Name(s)": "My Chemical Romance"})
+            >>> print(row.search_query)
+            'Helena My Chemical Romance'
     """
     model_config = ConfigDict(populate_by_name=True)
 

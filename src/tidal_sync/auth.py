@@ -14,40 +14,29 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # Contact: infoLeonid@protonMail.com
-
 """
-Tidal Authentication and Profile Management Module.
+Tidal authentication and profile management module.
 
-This module provides functions for handling Tidal API OAuth authentication,
-managing multiple user profiles, and securely storing or deleting session tokens.
-It serves as the authentication backbone for the tidal-sync CLI.
+This module handles Tidal API OAuth authentication, multi-profile session
+management, and secure token storage. It acts as the authentication backbone
+for the CLI.
 
 Features:
     - Multi-profile session management
-    - Secure OAuth token persistence with strict OS file permissions
-    - Account collision detection to prevent duplicate profile logins
-    - High-security token deletion via logical overwrite (zero-filling)
+    - OAuth token persistence with strict OS file permissions (chmod 600)
+    - Account collision detection to prevent duplicate logins
+    - Token deletion via logical overwrite (zero-filling)
 
 Example:
-    Basic authentication and session retrieval:
-
-    >>> from auth import get_session
+    >>> from auth import get_session, secure_delete_token
     >>> session = get_session('main_profile')
-    >>> print(session.check_login())
+    >>> session.check_login()
     True
-
-    Securely wiping a profile's credentials:
-
-    >>> from auth import secure_delete_token
     >>> secure_delete_token('main_profile')
 
 Attributes:
-    CONFIG_DIR (Path): The default directory path for storing token files (~/.tidal_sync).
-    console (Console): The Rich console instance used for terminal output.
-
-Note:
-    This module interacts directly with the local file system to store sensitive
-    OAuth tokens. It requires the `tidalapi` and `rich` packages.
+    CONFIG_DIR (Path): Default directory for storing token files (~/.tidal_sync).
+    console (Console): Rich console instance for terminal output.
 """
 
 import os
@@ -57,8 +46,11 @@ import stat
 import tidalapi
 from pathlib import Path
 from datetime import datetime
-from typing import cast, Any
+from typing import cast
 from rich.console import Console
+
+from .domain.exceptions import TidalAuthenticationError
+from .domain.protocols import TidalUser
 
 console = Console()
 CONFIG_DIR = Path.home() / ".tidal_sync"
@@ -66,21 +58,15 @@ CONFIG_DIR = Path.home() / ".tidal_sync"
 
 def get_token_path(profile: str) -> Path:
     """
-    Resolve the absolute file path for a specific profile's token file.
+    Resolves the absolute file path for a profile's token file.
 
-    This function safely ensures that the base configuration directory 
-    exists before returning the expected file path.
+    Creates the base configuration directory if it does not already exist.
 
     Args:
         profile (str): The identifier string for the account profile.
 
     Returns:
-        Path: The fully qualified path to the profile's JSON token file.
-
-    Example:
-        >>> path = get_token_path('backup_account')
-        >>> print(path.name)
-        'backup_account.json'
+        Path: The fully qualified path to the JSON token file.
     """
     CONFIG_DIR.mkdir(exist_ok=True)
     return CONFIG_DIR / f"{profile}.json"
@@ -88,14 +74,14 @@ def get_token_path(profile: str) -> Path:
 
 def _get_all_profiles() -> dict[str, int]:
     """
-    Scan the configuration directory and map profile names to their Tidal User IDs.
+    Scans the configuration directory and maps profile names to Tidal user IDs.
 
-    This is an internal utility function primarily used for collision detection
-    during new logins to prevent authenticating the same account under multiple aliases.
+    This internal utility checks for account collisions during new logins,
+    preventing you from authenticating the same account under multiple aliases.
 
     Returns:
-        dict: A dictionary mapping profile names (str) to Tidal User IDs (int).
-              Returns an empty dictionary if the config directory is missing or empty.
+        dict[str, int]: A mapping of profile names to Tidal user IDs. Returns
+            an empty dictionary if the config directory is missing or empty.
     """
     profiles: dict[str, int] = {}
     if not CONFIG_DIR.exists(): return profiles
@@ -107,22 +93,21 @@ def _get_all_profiles() -> dict[str, int]:
                 if 'user_id' in data:
                     profiles[file.stem] = data['user_id']
         except (json.JSONDecodeError, OSError):
-            continue    # Gracefully ignore malformed or inaccessible token files
+            continue
 
     return profiles
 
 
 def _save_session_to_disk(session: tidalapi.Session, token_file: Path) -> None:
     """
-    Extract OAuth tokens from an active session and securely save them to disk.
+    Extracts OAuth tokens from an active session and saves them to disk.
 
-    Writes the token data to a JSON file and immediately applies strict POSIX 
-    file permissions (chmod 600) so that only the file owner can read or write it.
+    Writes the token data to a JSON file and immediately restricts POSIX
+    file permissions (chmod 600) so only the owner can read or write it.
 
     Args:
         session (tidalapi.Session): The authenticated Tidal session.
         token_file (Path): The destination file path.
-        profile (str): The name of the profile being saved (used for logging).
     """
     token_data = {
         'token_type': session.token_type,
@@ -142,24 +127,24 @@ def _save_session_to_disk(session: tidalapi.Session, token_file: Path) -> None:
 
 def get_session(profile: str = "default") -> tidalapi.Session:
     """
-    Load an existing session or prompt the user for a new OAuth login.
+    Loads an existing session or prompts the user for a new OAuth login.
 
-    This function attempts to load cached credentials for the specified profile.
-    If the credentials are valid, it re-saves them (to capture potential background
-    token refreshes) and returns the session. If they are missing or invalid, 
-    it initiates a new Tidal OAuth login flow.
+    Attempts to load cached credentials for the specified profile. If the
+    credentials are valid, it re-saves them to capture potential background
+    token refreshes. If they are missing or invalid, it initiates a new
+    login flow.
 
     Args:
         profile (str, optional): The name of the profile to load. Defaults to "default".
 
     Returns:
-        tidalapi.Session: A fully authenticated and active Tidal session.
+        tidalapi.Session: An authenticated Tidal session.
 
     Raises:
-        SystemExit: If the Tidal API fails to return a valid user object upon successful login.
+        TidalAuthenticationError: If the API fails to return a valid user object.
 
     Example:
-        >>> session = get_session("my_main_account")
+        >>> session = get_session("main_account")
         >>> tracks = session.user.favorites.tracks()
     """
     session = tidalapi.Session()
@@ -177,7 +162,6 @@ def get_session(profile: str = "default") -> tidalapi.Session:
             )
 
             if session.check_login():
-                # Re-save to disk to persist refreshed tokens handled by tidalapi
                 _save_session_to_disk(session, token_file)
                 console.print(f"[green]Authenticated as profile: [bold]{profile}[/bold][/green]")
                 return session
@@ -188,11 +172,9 @@ def get_session(profile: str = "default") -> tidalapi.Session:
     console.print(f"[cyan]Logging in to profile: [bold]{profile}[/bold][/cyan]")
     session.login_oauth_simple()
 
-    # Cast user to Any to satisfy IDE static analysis requirements
-    user = cast(Any, session.user)
-    if not user or not hasattr(user, 'id'):
-        console.print("[red]Critical Error: Tidal API did not return a valid user object.[/red]")
-        raise SystemExit(1)
+    user = cast(TidalUser, cast(object, session.user))
+    if not user or getattr(user, 'id', None) is None:
+        raise TidalAuthenticationError("[red]Critical Error: Tidal API did not return a valid user object.[/red]")
 
     # 3. Collision Detection: Check if this Tidal account is already tied to another profile
     existing_profiles = _get_all_profiles()
@@ -207,19 +189,14 @@ def get_session(profile: str = "default") -> tidalapi.Session:
 
 def secure_delete_token(profile: str = "default") -> None:
     """
-    Securely clear and remove the session token file for a specific profile.
+    Securely clears and removes the session token file for a profile.
 
     Performs a logical overwrite (zero-filling) of the token file contents,
-    verifies to overwrite, and then unlinks the file. This process mitigates
-    the risk of credentials being recovered from the disk by standard data
-    recovery tools.
+    verifies the overwrite, and unlinks the file. This prevents standard
+    data recovery tools from restoring the credentials.
 
     Args:
         profile (str, optional): The name of the profile to wipe. Defaults to "default".
-
-    Example:
-        >>> secure_delete_token('compromised_profile')
-        Profile 'compromised_profile' cleared and verified.
     """
     token_file = get_token_path(profile)
 
@@ -230,7 +207,6 @@ def secure_delete_token(profile: str = "default") -> None:
     try:
         file_size = token_file.stat().st_size
 
-        # Open in binary update mode to perform an in-place logical clear
         with open(token_file, "r+b") as f:
             # Pass 1: Overwrite with null bytes
             f.seek(0)
@@ -252,5 +228,4 @@ def secure_delete_token(profile: str = "default") -> None:
 
     except OSError as e:
         console.print(f"[red]Secure delete failed: {e}[/red]")
-        # Fallback to standard deletion if secure wipe encounters an OS lock
         token_file.unlink(missing_ok=True)

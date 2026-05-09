@@ -1,6 +1,6 @@
 [project]
 name = "tidal-sync"
-version = "1.0.1"
+version = "1.0.2"
 description = "A powerful, modern CLI tool to backup, restore, and clone full Tidal libraries."
 readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }
@@ -10,6 +10,9 @@ dependencies = [
     "typer>=0.12.1",
     "pydantic>=2.12.2",
     "rich>=14.2.0",
+    "requests==2.33.1",
+    "orjson>=3.11.9",
+    "loguru>=0.7.3",
 ]
 
 [project.scripts]

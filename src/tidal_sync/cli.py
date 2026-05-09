@@ -18,9 +18,9 @@
 """
 Command-line interface for tidal-sync.
 
-This module sets up the terminal commands using Typer. It routes user inputs
-to the core authentication, synchronisation, and clearing functions, while
-managing safety prompts for destructive actions.
+This module defines the terminal commands using Typer. It routes user
+inputs to the core authentication, synchronisation, and clearing functions,
+and manages safety prompts for destructive actions.
 
 Example:
     To view available commands in the terminal:
@@ -31,12 +31,17 @@ import typer
 from pathlib import Path
 from typing import Annotated
 from rich.console import Console
+from loguru import logger
 
+from .domain.logger import setup_global_logging
+from .domain.enums import ClearTarget
+from .domain.exceptions import TidalAuthenticationError
 from .auth import get_session, secure_delete_token, _get_all_profiles
 from .sync import import_target, export_playlists, clear_library
 
 app = typer.Typer(help="Modern CLI for managing, importing, exporting, and cloning Tidal libraries.")
 console = Console()
+setup_global_logging()
 
 
 @app.command()
@@ -44,22 +49,26 @@ def login(
     profile: Annotated[str, typer.Option("--profile", "-p", help="Profile name for dual-account management")] = "default"
 ) -> None:
     """
-    Authenticate a Tidal account and save it to a local profile.
+    Authenticates a Tidal account and saves it to a local profile.
 
-    Use the `--profile` flag to maintain multiple active logins simultaneously,
-    which is necessary for cloning an account.
+    Use the `--profile` flag to keep multiple active logins simultaneously.
+    This is necessary if you want to clone an account.
     """
-    get_session(profile)
-
+    try:
+        get_session(profile)
+    except TidalAuthenticationError as e:
+            console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+            raise typer.Exit(1)
 
 @app.command()
 def logout(
     profile: Annotated[str, typer.Option("--profile", "-p", help="Profile name to wipe")] = "default"
 ) -> None:
     """
-    Securely delete session credentials for a specific profile.
+    Securely deletes session credentials for a specific profile.
 
-    Overwrites the local token file with null bytes before deleting it from the disk.
+    Overwrites the local token file with null bytes before deleting it
+    from the disk.
     """
     secure_delete_token(profile)
 
@@ -71,14 +80,16 @@ def import_data(
     profile: Annotated[str, typer.Option("--profile", "-p", help="Which account profile to import into")] = "default"
 ) -> None:
     """
-    Import CSVs into Tidal.
+    Imports CSVs into Tidal.
 
-    If given a directory, it recursively finds and imports all CSVs.
-    It safely checks your existing library and skips tracks you already own.
+    If you provide a directory, it recursively finds and imports all CSV files.
+    It checks your existing library and automatically skips tracks you already own.
     """
-    session = get_session(profile)
-    import_target(session, target_path, target_playlist_name=name)
-
+    try:
+        session = get_session(profile)
+        import_target(session, target_path)
+    finally:
+        logger.remove()  # Safely flushes the enqueue=True background threads before the CLI exits
 
 @app.command(name="export")
 def export_all(
@@ -86,9 +97,9 @@ def export_all(
     profile: Annotated[str, typer.Option("--profile", "-p", help="Which account profile to export from")] = "default"
 ) -> None:
     """
-    Download all Tidal playlists and favourites to CSV files.
+    Downloads all Tidal playlists and favourites to CSV files.
 
-    Creates a categorised folder structure at the specified output directory.
+    Builds a categorised folder structure at the specified output directory.
     """
     session = get_session(profile)
     export_playlists(session, output_dir)
@@ -96,37 +107,34 @@ def export_all(
 
 @app.command()
 def clear(
-    target: Annotated[str, typer.Argument(help="What to clear: 'all', 'tracks', 'albums', 'artists', 'playlists'")],
+    target: Annotated[ClearTarget, typer.Argument(help="What to clear")],
     profile: Annotated[str, typer.Option("--profile", "-p", help="Which account profile to clear")] = "default",
     force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt")] = False
 ) -> None:
     """
-    Destructively wipe data from a Tidal account.
+    Destructively wipes data from a Tidal account.
 
-    WARNING: This action is permanent. Unless the `--force` flag is provided,
-    the programme will ask for manual confirmation before proceeding.
+    WARNING: This action is permanent. Unless you provide the `--force` flag,
+    the tool will ask for manual confirmation before proceeding.
     """
-    valid_targets = ["all", "tracks", "albums", "artists", "playlists"]
-    target = target.lower()
-
-    if target not in valid_targets:
-        console.print(f"[red]Invalid target. Must be one of: {', '.join(valid_targets)}[/red]")
-        raise typer.Exit(1)
-
     if not force:
         typer.confirm(
             f"Are you absolutely sure you want to permanently delete {target} from the '{profile}' profile?",
             abort=True
         )
 
-    session = get_session(profile)
-    clear_library(session, target)
+    try:
+        session = get_session(profile)
+        clear_library(session, target)
+    except TidalAuthenticationError as e:
+        console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+        raise typer.Exit(1)
 
 
 @app.command(name="profiles")
 def list_profiles() -> None:
     """
-    List all authenticated Tidal profiles saved on this machine.
+    Lists all authenticated Tidal profiles saved on this machine.
     """
     profiles = _get_all_profiles()
 

@@ -2,13 +2,15 @@
 # Local profile storage
 .tidal_sync/
 *.json
-FUTURE.md
+
 
 # Backups and Exports
 import_reports/
 exports/
 account_transfer/
 csv-files-go-here/
+FUTURE.md
+git-commits.md
 
 # --- Python & Environment ---
 __pycache__/

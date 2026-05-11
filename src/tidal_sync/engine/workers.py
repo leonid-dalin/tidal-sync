@@ -103,8 +103,21 @@ async def handle_match_result_async(
 
         if is_new:
             if add_method:
-                await add_method(matched_id)
-                await stats.add_added()
+                try:
+                    await add_method(matched_id)
+                    await stats.add_added()
+                except Exception as e:
+                    # Catch region-locks/404s for single items (Albums/Artists)
+                    # so they don't crash the entire TaskGroup.
+                    await stats.add_failed()
+                    logger.bind(audit=True).error(
+                        "Item Add Failed (Region Locked or Removed)",
+                        type=item_type,
+                        name=item_name,
+                        artist=artist_name,
+                        error=str(e)
+                    )
+                    return
             logger.bind(audit=True).debug(
                 "Item Staged",
                 type=item_type,
@@ -123,12 +136,12 @@ async def handle_match_result_async(
     else:
         await stats.add_failed()
         logger.bind(audit=True).warning(
-                    "Failed to Match",
-                    type=item_type,
-                    name=item_name,
-                    artist=artist_name,
-                    source=source_file,
-                    reason=failure_reason
+            "Failed to Match",
+            type=item_type,
+            name=item_name,
+            artist=artist_name,
+            source=source_file,
+            reason=failure_reason
         )
 
 async def run_matching_tasks_async(task_desc: str, items: list[Any], match_func: Callable[[Any], Awaitable[Any]]) -> None:

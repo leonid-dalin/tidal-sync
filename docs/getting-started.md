@@ -6,7 +6,7 @@ Tidal Sync is a command-line tool that lets you back up, restore, and clone your
 
 ## Prerequisites
 
-- macOS, Linux, or Windows (**PowerShell**)
+- macOS, Linux, or Windows (use **PowerShell**).
 - [uv](https://docs.astral.sh/uv/) installed on your system
 - An active Tidal account
 
@@ -20,9 +20,15 @@ Tidal Sync is a command-line tool that lets you back up, restore, and clone your
 2. **Install the package and dependencies:**
     ```bash
     uv venv
+   
+   # macOS / Linux
+   source .venv/bin/activate
+   
+   # Windows (PowerShell)
+   # If this fails, run: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+   .\.venv\Scripts\Activate.ps1
+   
     uv pip install -e .
-    source .venv/bin/activate # macOS / Linux
-   .venv\Scripts\Activate.ps1 # Windows (PowerShell) ONLY
    ```
 3. **Authenticate your account:**
    ```bash

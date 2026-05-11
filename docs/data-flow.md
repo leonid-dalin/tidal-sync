@@ -17,14 +17,14 @@ The `csv.DictReader` parses the rows, passing them into the Pydantic `TrackRow` 
 
 The tool does not upload tracks blindly. It must translate the local CSV data into valid Tidal database IDs.
 
-The tool fetches the target playlist (or the user's "Liked Songs") via `tidalapi` and builds a local `set` of `existing_track_ids`. It then spins up a `concurrent.futures.ThreadPoolExecutor`. 
+The tool fetches the target playlist (or the user's "Liked Songs") via `tidalapi` and builds a local `set` of `existing_track_ids`. It then spins up an `asyncio.TaskGroup`. 
 
-For each track, a worker thread runs `_match_single_track`, attempting to find a match in this specific order:
+For each track, an asynchronous task runs `_match_single_track`, attempting to find a match in this specific order:
 1. **Direct ID:** If the CSV contains a `tidal_id`, it uses it immediately.
 2. **ISRC Match:** If an International Standard Recording Code is present, it queries the Tidal API via `session.search(f"isrc:{track.isrc}")`. This ensures 1-to-1 high-fidelity matching regardless of region or naming variations.
 3. **Text Fallback:** It falls back to querying the API using the computed `search_query`.
 
-If the matched ID is already in the `existing_track_ids` set, the worker drops the track to prevent duplication. If it is a new match, the worker uses a `threading.Lock()` to safely append the ID to a shared `track_ids_to_add` list and increments the session's `added` counter.
+If the matched ID is already in the `existing_track_ids` set, the worker drops the track to prevent duplication. If it is a new match, the worker uses an `asyncio.Lock()` to safely append the ID to a shared `track_ids_to_add` list and increments the session's `added` counter. The lock strictly isolates local state changes, allowing actual network calls to run concurrently outside the lock.
 
 ## 3. Chunked uploads
 

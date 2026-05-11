@@ -59,14 +59,15 @@ MEDIUM_DELAY = 0.2
 
 async def export_playlists_async(session: tidalapi.Session, output_dir: Path) -> None:
     """
-    Downloads a user's entire Tidal library to local CSV files concurrently
+    Downloads a user's complete library and playlists to a local directory.
 
-    Generates a folder structure containing all custom playlists, liked songs,
-    saved albums, and followed artists.
+    Builds a categorised folder structure (`Playlists` and `Favorites`) and
+    writes the metadata to CSV files. File I/O operations run in background
+    threads to prevent disk latency from stalling the asynchronous event loop.
 
     Args:
-        session (tidalapi.Session): The active Tidal connection.
-        output_dir (Path): The directory where the backup folders will go.
+        session (tidalapi.Session): The authenticated Tidal session.
+        output_dir (Path): The destination directory for the CSV exports.
     """
     user = cast(TidalUser, cast(object, session.user))
     if not user or not hasattr(user, 'favorites'):
@@ -157,16 +158,17 @@ async def export_playlists_async(session: tidalapi.Session, output_dir: Path) ->
 
 async def import_target_async(session: tidalapi.Session, target_path: Path, target_playlist_name: str | None = None) -> None:
     """
-    Routes a file or directory into the Tidal library.
+    Coordinates the bulk import of CSV data into the authenticated Tidal account.
 
-    Scans the provided path, triggers the correct import functions based on
-    filenames, and generates an audit report detailing any tracks that were
-    skipped or failed to match.
+    Evaluates the provided path, determining whether to process a single
+    file or recursively scan a directory for valid CSVs. It establishes
+    the telemetry file sink and prints a final statistical audit report
+    upon completion.
 
     Args:
-        session (tidalapi.Session): The active Tidal connection.
-        target_path (Path): A specific CSV file or a directory containing multiple CSVs.
-        target_playlist_name (str | None): Override name for single-file playlist imports.
+        session (tidalapi.Session): The authenticated Tidal session.
+        target_path (Path): The file or directory path containing source CSVs.
+        target_playlist_name (str | None): An optional override for the destination playlist name.
     """
     log_file = setup_audit_logging(Path("./import_reports"))
 
@@ -194,7 +196,17 @@ async def import_target_async(session: tidalapi.Session, target_path: Path, targ
 
 async def _route_and_import_async(session: tidalapi.Session, file_path: Path, fallback_name: str | None, stats: ImportStats) -> None:
     """
-    Directs specific CSV files to their respective import handlers based on filenames.
+    Routes a specific CSV file to its appropriate category importer.
+
+    Inspects the file's name to categorise the payload (e.g., matching
+    'Liked Albums.csv' to the album importer). If the file does not match
+    a known system category, it defaults to standard track processing.
+
+    Args:
+        session (tidalapi.Session): The authenticated Tidal session.
+        file_path (Path): The exact CSV file to process.
+        fallback_name (str | None): The user-provided playlist name override, if any.
+        stats (ImportStats): The shared session statistics counter.
     """
     filename = file_path.name
     if filename == "Liked Albums.csv":
@@ -212,10 +224,20 @@ async def _route_and_import_async(session: tidalapi.Session, file_path: Path, fa
 
 async def _import_tracks_async(session: tidalapi.Session, file_path: Path, stats: ImportStats, is_favorites: bool = False, playlist_name: str | None = None) -> None:
     """
-    Parses a track CSV, matches entries against Tidal, and adds them to the library.
+    Matches and uploads a batch of tracks to a specific destination.
 
-    Includes a bisection fallback to handle region-locked tracks that cause
-    entire batch uploads to fail.
+    Reads the source CSV, queries Tidal for matches using ISRC or text fallbacks,
+    and stages the validated IDs. It pushes new tracks to the server in chunks
+    of 50. If the server rejects a chunk (due to regional locks), it isolates
+    the problematic tracks using a recursive bisection algorithm and refreshes
+    server ETags to prevent synchronisation crashes.
+
+    Args:
+        session (tidalapi.Session): The authenticated Tidal session.
+        file_path (Path): The local CSV file containing the source tracks.
+        stats (ImportStats): The shared counter tracking the session's overall progress.
+        is_favorites (bool): If True, tracks upload directly to Liked Songs. Defaults to False.
+        playlist_name (str | None): The target playlist name. Created if it does not exist.
     """
     tracks = await asyncio.to_thread(parse_csv, file_path, TrackRow)
     if not tracks: return
@@ -363,7 +385,16 @@ async def _import_tracks_async(session: tidalapi.Session, file_path: Path, stats
 
 async def _import_albums_async(session: tidalapi.Session, file_path: Path, stats: ImportStats) -> None:
     """
-    Parses an album CSV, matches entries against Tidal, and adds them to favourites.
+    Matches and saves albums to the user's 'Liked Albums' collection.
+
+    Parses the source file and cross-references it against the user's
+    existing liked albums to prevent duplicate network calls. Executes
+    the search and addition operations concurrently.
+
+    Args:
+        session (tidalapi.Session): The authenticated Tidal session.
+        file_path (Path): The local CSV file containing album metadata.
+        stats (ImportStats): The shared session statistics counter.
     """
     albums = await asyncio.to_thread(parse_csv, file_path, AlbumRow)
     if not albums: return
@@ -401,7 +432,15 @@ async def _import_albums_async(session: tidalapi.Session, file_path: Path, stats
 
 async def _import_artists_async(session: tidalapi.Session, file_path: Path, stats: ImportStats) -> None:
     """
-    Parses an artist CSV, matches entries against Tidal, and follows them.
+    Matches and saves artists to the user's 'Followed Artists' collection.
+
+    Scans the user's current followed list to prevent redundant API calls,
+    then concurrently searches and adds new artists found in the source file.
+
+    Args:
+        session (tidalapi.Session): The authenticated Tidal session.
+        file_path (Path): The local CSV file containing artist metadata.
+        stats (ImportStats): The shared session statistics counter.
     """
     artists = await asyncio.to_thread(parse_csv, file_path, ArtistRow)
     if not artists: return
@@ -438,7 +477,16 @@ async def _import_artists_async(session: tidalapi.Session, file_path: Path, stat
 
 async def _import_blocked_artists_async(session: tidalapi.Session, file_path: Path, stats: ImportStats) -> None:
     """
-    Parses an artist CSV, matches entries against Tidal, and blocks/mutes them.
+    Matches and mutes artists within the user's account.
+
+    Restricts the specified artists from appearing in Tidal's algorithmic
+    radio stations or suggested track queues by executing POST requests
+    directly against the internal user blocklist endpoint.
+
+    Args:
+        session (tidalapi.Session): The authenticated Tidal session.
+        file_path (Path): The local CSV file containing artist metadata.
+        stats (ImportStats): The shared session statistics counter.
     """
     artists = await asyncio.to_thread(parse_csv, file_path, ArtistRow)
     if not artists: return
@@ -476,11 +524,15 @@ async def _import_blocked_artists_async(session: tidalapi.Session, file_path: Pa
 
 async def clear_library_async(session: tidalapi.Session, target: ClearTarget) -> None:
     """
-    Destructively removes items from the user's library.
+    Destructively deletes items from a user's Tidal account.
+
+    Executes concurrent deletion requests across the selected category.
+    It relies on headless worker groups to process the requests quickly
+    without blocking the primary application loop.
 
     Args:
-        session (tidalapi.Session): The active Tidal connection.
-        target (ClearTarget): The category to clear.
+        session (tidalapi.Session): The authenticated Tidal session.
+        target (ClearTarget): The specific section of the library to wipe.
     """
     user = cast(TidalUser, cast(object, session.user))
     if not hasattr(user, 'favorites'): return

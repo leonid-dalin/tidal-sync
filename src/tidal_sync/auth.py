@@ -59,7 +59,6 @@ CONFIG_DIR = Path.home() / ".tidal_sync"
 def get_token_path(profile: str) -> Path:
     """
     Resolves the absolute file path for a profile's token file.
-
     Creates the base configuration directory if it does not already exist.
 
     Args:
@@ -191,9 +190,9 @@ def secure_delete_token(profile: str = "default") -> None:
     """
     Securely clears and removes the session token file for a profile.
 
-    Performs a logical overwrite (zero-filling) of the token file contents,
-    verifies the overwrite, and unlinks the file. This prevents standard
-    data recovery tools from restoring the credentials.
+    Performs a logical zero-fill overwrite of the token file on the disk
+    before deletion to mitigate data recovery risks and prevent standard
+    forensic restoration.
 
     Args:
         profile (str, optional): The name of the profile to wipe. Defaults to "default".

@@ -14,6 +14,16 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # Contact: infoLeonid@protonMail.com
+"""
+CSV parsing and data sanitisation module.
+
+Provides robust ingestion of user-exported library files. It handles
+various text encodings, strips hidden control characters (like Byte
+Order Marks and null bytes), and validates rows against strict Pydantic
+schemas to ensure metadata integrity before it reaches the synchronisation
+engine.
+"""
+
 import csv
 import io
 from pathlib import Path
@@ -26,8 +36,17 @@ T = TypeVar('T', bound=BaseModel)
 
 def _clean_row(row: dict[Any, Any]) -> dict[str, Any]:
     """
-    Sanitises messy CSV exports by stripping hidden characters,
-    stray whitespace, and null bytes from both keys and values.
+    Sanitises raw CSV exports to prevent database mismatch errors.
+
+    Music metadata exports often contain hidden Byte Order Marks (BOM),
+    null bytes (\\x00), and trailing whitespace. This function strips
+    those artefacts from both column headers and values.
+
+    Args:
+        row (dict[Any, Any]): A single parsed row from the CSV DictReader.
+
+    Returns:
+        dict[str, Any]: A cleaned dictionary safe for Pydantic validation.
     """
     cleaned = {}
     for k, v in row.items():
@@ -44,20 +63,22 @@ def _clean_row(row: dict[Any, Any]) -> dict[str, Any]:
 
 def parse_csv(file_path: Path, model_class: type[T]) -> list[T]:
     """
-    Reads and validates a CSV file into Pydantic models.
+    Reads, decodes, and validates a CSV file into strongly typed objects.
+
+    Attempts to decode the file using UTF-8-SIG to strip Windows artefacts.
+    If that fails, it falls back to CP1252 and Latin-1. Rows that fail
+    schema validation are dropped and logged, preventing broken metadata
+    from halting the entire synchronisation queue.
 
     Args:
-        file_path (Path): The location of the CSV file.
-        model_class (type[T]): The Pydantic model to validate the rows against.
+        file_path (Path): The absolute or relative path to the CSV file.
+        model_class (type[T]): The Pydantic model representing the expected schema.
 
     Returns:
-        list[T]: A list of validated row objects. Malformed rows are skipped and logged.
+        list[T]: A list of validated model instances.
     """
     items: list[T] = []
-    seen_hashes: set[int] = set()
 
-    # Fallback encoding strategy: Try UTF-8 (with BOM strip) first.
-    # If it fails, fallback to cp1252 (Windows) and latin-1.
     encodings = ['utf-8-sig', 'cp1252', 'latin-1']
     content = ""
 

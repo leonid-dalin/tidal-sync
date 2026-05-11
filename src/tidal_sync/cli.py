@@ -55,6 +55,9 @@ def login(
 
     Use the `--profile` flag to keep multiple active logins simultaneously.
     This is necessary if you want to clone an account.
+
+    Args:
+        profile (str): The name for the saved profile. Defaults to 'default'.
     """
     try:
         get_session(profile)
@@ -67,10 +70,10 @@ def logout(
     profile: Annotated[str, typer.Option("--profile", "-p", help="Profile name to wipe")] = "default"
 ) -> None:
     """
-    Securely deletes session credentials for a specific profile.
+    Securely logs out and wipes session credentials for a specific profile.
 
-    Overwrites the local token file with null bytes before deleting it
-    from the disk.
+    Args:
+        profile (str): The name of the profile to wipe. Defaults to 'default'.
     """
     secure_delete_token(profile)
 
@@ -82,10 +85,16 @@ def import_data(
     profile: Annotated[str, typer.Option("--profile", "-p", help="Which account profile to import into")] = "default"
 ) -> None:
     """
-    Imports CSVs into Tidal.
+    Ingests CSV metadata and synchronises it with a Tidal account.
 
-    If you provide a directory, it recursively finds and imports all CSV files.
-    It checks your existing library and automatically skips tracks you already own.
+    If the target path is a directory, the tool recursively processes all
+    contained CSV files. Existing items in the target library are automatically
+    skipped to prevent duplicates.
+
+    Args:
+        target_path (Path): Path to a CSV file or a directory of CSVs.
+        name (str | None): Optional name for the target playlist.
+        profile (str): The authentication profile to use for the import.
     """
     try:
         session = get_session(profile)
@@ -99,9 +108,14 @@ def export_all(
     profile: Annotated[str, typer.Option("--profile", "-p", help="Which account profile to export from")] = "default"
 ) -> None:
     """
-    Downloads all Tidal playlists and favourites to CSV files.
+    Backs up the entire Tidal library to local CSV files.
 
-    Builds a categorised folder structure at the specified output directory.
+    Generates a categorised folder structure for playlists, liked tracks,
+    albums, and followed artists at the specified output path.
+
+    Args:
+        output_dir (Path): The directory where the backup will be stored.
+        profile (str): The authentication profile to export from.
     """
     session = get_session(profile)
     asyncio.run(export_playlists_async(session, output_dir))
@@ -114,10 +128,15 @@ def clear(
     force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt")] = False
 ) -> None:
     """
-    Destructively wipes data from a Tidal account.
+    Destructively wipes a specific category of data from a Tidal account.
 
-    WARNING: This action is permanent. Unless you provide the `--force` flag,
-    the tool will ask for manual confirmation before proceeding.
+    Provides a manual confirmation prompt unless the `--force` flag is used.
+    This action is irreversible.
+
+    Args:
+        target (ClearTarget): The category to wipe (e.g., 'all', 'tracks').
+        profile (str): The authentication profile to clear.
+        force (bool): Skips the manual safety confirmation. Defaults to False.
     """
     if not force:
         typer.confirm(
@@ -136,7 +155,7 @@ def clear(
 @app.command(name="profiles")
 def list_profiles() -> None:
     """
-    Lists all authenticated Tidal profiles saved on this machine
+    Displays a list of all authenticated Tidal profiles stored locally.
     """
     profiles = _get_all_profiles()
 

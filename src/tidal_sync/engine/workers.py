@@ -14,6 +14,15 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # Contact: infoLeonid@protonMail.com
+"""
+Asynchronous concurrency orchestration and state tracking.
+
+Manages high-performance task execution using modern `asyncio.TaskGroup`
+and `asyncio.Semaphore` implementations to bound network throughput. It
+provides async-safe statistical counters and ensures race-condition-free
+state management during bulk track matching and uploading.
+"""
+
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
@@ -28,10 +37,11 @@ MAX_CONCURRENCY = 10
 @dataclass
 class ImportStats:
     """
-    Async-safe counter for the final terminal summary
+    Async-safe aggregator for import session statistics.
 
-    Tracks the number of skipped, failed, and added items during an
-    import session across multiple concurrent threads.
+    Tracks the total number of items added, skipped, or failed across multiple
+    concurrent tasks. Uses an internal lock to ensure atomic updates to counters
+    and the shared 'existing_ids' set.
     """
     skipped: int = 0
     failed: int = 0
@@ -62,10 +72,24 @@ async def handle_match_result_async(
         failure_reason: str = "Not Found on Tidal"
 ) -> None:
     """
-    Safely logs and updates statistics for a matched item using an async lock
+    Processes and logs the outcome of a metadata matching operation.
 
-    Prevents race conditions when multiple threads attempt to add tracks to
-    the same playlist or update the global counter simultaneously.
+    Updates the global session statistics using an asynchronous lock to
+    prevent race conditions. It ensures network actions (like adding a track)
+    execute outside the lock to maintain true concurrency across the worker pool.
+
+    Args:
+        matched_id (str | None): The Tidal database ID if a match was found.
+        item_type (str): The category of the item (e.g., "Track", "Album").
+        item_name (str): The primary title of the item.
+        artist_name (str): The primary artist associated with the item.
+        source_file (str): The filename where the metadata originated.
+        dest_name (str): The target playlist or category in the user's library.
+        existing_ids (set[str]): A shared set of IDs already present in the destination.
+        stats (ImportStats): The shared counter tracking session outcomes.
+        add_method (Callable | None): The network function to execute if the item is new.
+        ids_to_add (list[str] | None): A batch array to append the ID to (for chunked uploads).
+        failure_reason (str): The reason logged if the match failed. Defaults to "Not Found on Tidal".
     """
     if matched_id:
         is_new = False
@@ -109,10 +133,12 @@ async def handle_match_result_async(
 
 async def run_matching_tasks_async(task_desc: str, items: list[Any], match_func: Callable[[Any], Awaitable[Any]]) -> None:
     """
-    Runs matching functions concurrently while displaying a rich progress bar.
+    Executes concurrent asynchronous tasks while updating a Rich progress bar.
 
-    This abstracts away the ThreadPoolExecutor boilerplate and ensures all
-    futures are explicitly resolved to surface any swallowed exceptions.
+    Args:
+        task_desc (str): The text displayed next to the loading spinner.
+        items (list[Any]): The payload objects to process.
+        match_func (Callable[[Any], Awaitable[Any]]): The async worker function.
     """
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
 
@@ -137,8 +163,14 @@ async def run_matching_tasks_async(task_desc: str, items: list[Any], match_func:
 
 async def run_headless_tasks_async(items: list[Any], task_func: Callable[[Any], Awaitable[Any]]) -> None:
     """
-    A headless async wrapper for tasks that don't need a progress bar
-    (e.g., executing background deletes during a clear operation).
+    Executes a list of asynchronous tasks concurrently without terminal UI feedback.
+
+    Restricts total concurrency using an asyncio.Semaphore to prevent local memory
+    exhaustion or socket starvation when processing thousands of items.
+
+    Args:
+        items (list[Any]): The payload objects to process.
+        task_func (Callable[[Any], Awaitable[Any]]): The async worker function.
     """
     if not items:
         return

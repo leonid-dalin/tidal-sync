@@ -14,14 +14,28 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # Contact: infoLeonid@protonMail.com
+"""
+Network orchestration and rate-limiting for the Tidal API.
+
+Provides a centralised gatekeeper to manage API backoff across concurrent
+asynchronous tasks. It intercepts HTTP 429 (Too Many Requests) and HTTP 403
+(Abuse Detected) errors, pausing all workers to prevent account suspensions.
+"""
 import asyncio
 import time
 from typing import Any, Callable
 from loguru import logger
 from tidalapi.exceptions import TooManyRequests
 
-
 class GlobalTidalGate:
+    """
+    Process-global thread-safe pacer to bound network throughput.
+
+    Tracks the active backoff window. When one worker receives a rate-limit
+    response, it updates the shared clock. Sibling workers check this clock
+    during their pre-flight checks and sleep rather than opening new connections
+    into an active throttle.
+    """
     def __init__(self):
         self.backoff_until: float = 0.0
         self.lock = asyncio.Lock()
@@ -47,7 +61,27 @@ class GlobalTidalGate:
 GLOBAL_GATE = GlobalTidalGate()
 
 async def execute_network(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Executes a synchronous Tidal API call safely behind the Global Gate"""
+    """
+    Executes a Tidal API network call safely behind the global rate limiter.
+
+    Wraps the synchronous API execution in an asyncio thread to prevent
+    blocking the main event loop. If the server rejects the request, it
+    triggers the global backoff and retries up to five times.
+
+    Args:
+        func (Callable): The synchronous Tidal API method to execute.
+        *args: Positional arguments for the API method.
+        **kwargs: Keyword arguments for the API method.
+
+    Returns:
+        Any: The parsed response from the Tidal API.
+
+    Raises:
+        Exception: If the maximum retry limit (5) is exceeded.
+
+    Example:
+        >>> result = await execute_network(session.search, "artist name")
+    """
     retries = 0
     while retries < 5:
         await GLOBAL_GATE.pre_flight_check()
@@ -72,12 +106,36 @@ async def execute_network(func: Callable[..., Any], *args: Any, **kwargs: Any) -
 
 async def fetch_all_async(api_method: Any, **kwargs: Any) -> list[Any]:
     """
-    Async wrapper for exhaustive pagination. Offloads the blocking
-    API call to a background thread to keep the event loop free
+    Exhaustively fetches paginated items from a Tidal API endpoint asynchronously.
+
+    Tidal limits responses to 50 items and occasionally drops region-locked
+    tracks from the internal count. This manual pagination bypasses those limits
+    by advancing the offset until the server returns an empty list.
+
+    Args:
+        api_method (Any): The Tidal API function to call (e.g., session.user.playlists).
+        **kwargs: Additional parameters passed directly to the API endpoint.
+
+    Returns:
+        list[Any]: A complete, unpaginated list of all items.
     """
     return await execute_network(_fetch_all_sync, api_method, **kwargs)
 
 def _fetch_all_sync(api_method: Any, **kwargs: Any) -> list[Any]:
+    """
+    The synchronous core logic for exhaustive API pagination.
+
+    Iterates through Tidal's paginated responses by incrementing the offset
+    parameter until the server returns an empty set or a duplicate page. This
+    function is typically wrapped by `fetch_all_async` to run in a background thread.
+
+    Args:
+        api_method (Any): The synchronous Tidal API method to call.
+        **kwargs: Parameters such as 'limit' or 'offset' passed to the API.
+
+    Returns:
+        list[Any]: A consolidated list of all recovered items.
+    """
     items = []
     offset = 0
     limit = 50
@@ -107,7 +165,16 @@ def _fetch_all_sync(api_method: Any, **kwargs: Any) -> list[Any]:
 
 def fetch_blocked_artists(session: tidalapi.Session) -> list[Any]:
     """
-    Fetches blocked/muted artists directly via the session's internal request engine
+    Fetches the user's blocked or muted artists via an internal API endpoint.
+
+    This function manually maps requests to the user blocklist endpoint.
+    It handles pagination to ensure all blocked entries are recovered.
+
+    Args:
+        session (tidalapi.Session): The active Tidal session with a valid user ID.
+
+    Returns:
+        list[Any]: A list of artist objects recovered from the blocklist.
     """
     user = session.user
     if not user or not getattr(user, 'id', None):

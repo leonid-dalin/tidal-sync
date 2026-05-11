@@ -1,6 +1,19 @@
-"""
-Concurrency wrappers, thread pool management, and state tracking.
-"""
+# tidal-sync: A high-performance tool for backing up and cloning Tidal libraries.
+# Copyright (C) 2026 Leonid Dalin
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, version 3 or later of the License.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# Contact: infoLeonid@protonMail.com
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
@@ -45,7 +58,8 @@ async def handle_match_result_async(
         existing_ids: set[str],
         stats: ImportStats,
         add_method: Callable[[str], Awaitable[Any]] | None = None,
-        ids_to_add: list[str] | None = None
+        ids_to_add: list[str] | None = None,
+        failure_reason: str = "Not Found on Tidal"
 ) -> None:
     """
     Safely logs and updates statistics for a matched item using an async lock
@@ -66,14 +80,32 @@ async def handle_match_result_async(
         if is_new:
             if add_method:
                 await add_method(matched_id)
-            logger.bind(audit=True).debug("Item Staged", type=item_type, name=item_name, dest=dest_name)
+                await stats.add_added()
+            logger.bind(audit=True).debug(
+                "Item Staged",
+                type=item_type,
+                name=item_name,
+                dest=dest_name
+            )
         else:
             await stats.add_skipped()
-            logger.bind(audit=True).info("Skipped (Duplicate)", type=item_type, name=item_name, artist=artist_name, dest=dest_name)
+            logger.bind(audit=True).info(
+                "Skipped (Duplicate)",
+                type=item_type,
+                name=item_name,
+                artist=artist_name,
+                dest=dest_name
+            )
     else:
         await stats.add_failed()
-        logger.bind(audit=True).warning("Failed (Not Found)", type=item_type, name=item_name, artist=artist_name, source=source_file)
-
+        logger.bind(audit=True).warning(
+                    "Failed to Match",
+                    type=item_type,
+                    name=item_name,
+                    artist=artist_name,
+                    source=source_file,
+                    reason=failure_reason
+        )
 
 async def run_matching_tasks_async(task_desc: str, items: list[Any], match_func: Callable[[Any], Awaitable[Any]]) -> None:
     """

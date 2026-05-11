@@ -187,10 +187,10 @@ async def import_target_async(session: tidalapi.Session, target_path: Path, targ
         logger.error("Path not found", path=str(target_path))
 
     console.print(f"\n[bold yellow]Audit Report Generated:[/bold yellow]")
+    console.print(f"  • {stats.added} items successfully imported")
     console.print(f"  • {stats.skipped} items skipped (already owned/duplicates)")
     console.print(f"  • {stats.failed} items failed (could not be found on Tidal)")
     console.print(f"  • Detailed machine-readable log: [underline]{log_file}[/underline]")
-
 
 async def _route_and_import_async(session: tidalapi.Session, file_path: Path, fallback_name: str | None, stats: ImportStats) -> None:
     """
@@ -243,6 +243,7 @@ async def _import_tracks_async(session: tidalapi.Session, file_path: Path, stats
                 playlist = await execute_network(user.create_playlist, playlist_name, "Imported via tidal-sync <3")
 
     track_ids_to_add: list[str] = []
+    staged_tracks_map: dict[str, TrackRow] = {}
 
     async def _match_and_stage_track_async(track: TrackRow) -> None:
         matched_id = str(track.tidal_id) if track.tidal_id else None
@@ -256,10 +257,16 @@ async def _import_tracks_async(session: tidalapi.Session, file_path: Path, stats
             res_tracks = getattr(results, 'tracks', [])
             if res_tracks: matched_id = str(res_tracks[0].id)
 
+        failure_reason = "Not Found"
+        if not matched_id:
+            failure_reason = "ISRC mismatch & Text fallback failed" if track.isrc else "Text search failed (No ISRC provided)"
+        else:
+            staged_tracks_map[matched_id] = track
+
         await handle_match_result_async(
             matched_id, "Track", track.track_name, track.artist_name,
             file_path.name, str(dest_name), existing_track_ids, stats,
-            ids_to_add=track_ids_to_add
+            ids_to_add=track_ids_to_add, failure_reason=failure_reason
         )
 
     await run_matching_tasks_async(f"Matching {len(tracks)} tracks...", tracks, _match_and_stage_track_async)
@@ -269,9 +276,11 @@ async def _import_tracks_async(session: tidalapi.Session, file_path: Path, stats
 
         # Apply the rate-limit shield to the upload action specifically
         async def _upload_chunk_async(batch: list[str]) -> None:
+            nonlocal playlist
             if is_favorites and hasattr(user, 'favorites'):
-                await asyncio.to_thread(user.favorites.add_track, batch)
+                await execute_network(user.favorites.add_track, batch)
             elif playlist:
+                playlist = await execute_network(session.playlist, playlist.id)
                 await execute_network(playlist.add, batch)
 
         with Progress(SpinnerColumn(),
@@ -289,6 +298,21 @@ async def _import_tracks_async(session: tidalapi.Session, file_path: Path, stats
                     for tid in chunk:
                         logger.bind(audit=True).debug("Item Added", type="Track", id=tid, dest=dest_name)
                 except (HTTPError, ObjectNotFound) as e:
+                    # GUARD: Do not bisect if the error is a 412 ETag mismatch
+                    is_etag_error = isinstance(e, HTTPError) and getattr(e.response, 'status_code', None) == 412
+
+                    if is_etag_error:
+                        logger.bind(audit=True).warning("HTTP 412 (Stale ETag) detected. Retrying chunk...")
+                        try:
+                            await asyncio.sleep(1.0)
+                            await _upload_chunk_async(chunk)
+                            await stats.add_added(len(chunk))
+                            for tid in chunk:
+                                logger.bind(audit=True).debug("Item Added", type="Track", id=tid, dest=dest_name)
+                            progress.advance(add_task, advance=len(chunk))
+                            continue
+                        except Exception as retry_e:
+                            e = retry_e
                     logger.bind(audit=True).error("Chunk rejected, initiating bisection", chunk_size=len(chunk), error=str(e))
 
                     # Batch uploads fail entirely if even one track is region-locked.
@@ -303,8 +327,21 @@ async def _import_tracks_async(session: tidalapi.Session, file_path: Path, stats
                         except (HTTPError, ObjectNotFound) as _:
                             if len(sub_chunk) == 1:
                                 poison_id = sub_chunk[0]
-                                logger.bind(audit=True).error("Dropped Track (Region Locked)", track_id=poison_id)
-                                console.print(f"  [red]❌ Dropped Track ID {poison_id} (Region-locked)[/red]")
+                                poison_track = staged_tracks_map.get(poison_id)
+
+                                track_title = poison_track.track_name if poison_track else "Unknown"
+                                track_artist = poison_track.artist_name if poison_track else "Unknown"
+
+                                logger.bind(audit=True).error(
+                                    "Dropped Track (Region Locked)",
+                                    track_id=poison_id,
+                                    name=track_title,
+                                    artist=track_artist,
+                                    dest=dest_name
+                                )
+                                console.print(
+                                    f"  [red]❌ Dropped (Region-locked): {track_title} by {track_artist}[/red]")
+
                                 await stats.add_failed()
                             else:
                                 await asyncio.sleep(MEDIUM_DELAY * 2)
@@ -355,7 +392,8 @@ async def _import_albums_async(session: tidalapi.Session, file_path: Path, stats
         await handle_match_result_async(
             matched_id, "Album", album.album_name, album.artist_name,
             file_path.name, "Liked Albums", existing_album_ids, stats,
-            add_method=_async_add if hasattr(user, 'favorites') else None
+            add_method=_async_add if hasattr(user, 'favorites') else None,
+            failure_reason="Text search failed" if not matched_id else "N/A"
         )
 
     await run_matching_tasks_async(f"Matching & Adding {len(albums)} albums...", albums, _match_and_add_album_async)
@@ -391,7 +429,8 @@ async def _import_artists_async(session: tidalapi.Session, file_path: Path, stat
         await handle_match_result_async(
             matched_id, "Artist", artist.artist_name, "N/A",
             file_path.name, "Followed Artists", existing_artist_ids, stats,
-            add_method=_async_add if hasattr(user, 'favorites') else None
+            add_method=_async_add if hasattr(user, 'favorites') else None,
+            failure_reason="Text search failed" if not matched_id else "N/A"
         )
 
     await run_matching_tasks_async(f"Matching & Adding {len(artists)} artists...", artists, _match_and_add_artist_async)
@@ -428,7 +467,8 @@ async def _import_blocked_artists_async(session: tidalapi.Session, file_path: Pa
         await handle_match_result_async(
             matched_id, "Blocked Artist", artist.artist_name, "N/A",
             file_path.name, "Blocked Artists", existing_blocked_ids, stats,
-            add_method=_async_add
+            add_method=_async_add,
+            failure_reason="Text search failed" if not matched_id else "N/A"
         )
 
     await run_matching_tasks_async(f"Matching & Blocking {len(artists)} artists...", artists, _match_and_block_artist_async)

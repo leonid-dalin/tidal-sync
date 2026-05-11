@@ -1,7 +1,22 @@
+# tidal-sync: A high-performance tool for backing up and cloning Tidal libraries.
+# Copyright (C) 2026 Leonid Dalin
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, version 3 or later of the License.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# Contact: infoLeonid@protonMail.com
 import asyncio
 import time
-from functools import wraps
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable
 from loguru import logger
 from tidalapi.exceptions import TooManyRequests
 
@@ -20,13 +35,13 @@ class GlobalTidalGate:
                 logger.warning(f"Global Gate active. Sleeping for {remaining:.1f}s")
                 await asyncio.sleep(remaining)
 
-    async def trigger_backoff(self, seconds: float):
+    async def trigger_backoff(self, seconds: float, reason: str = "Rate Limit 429") -> None:
         """Called by a worker that gets a 429 or 403"""
         async with self.lock:
             new_time = time.time() + seconds
             if new_time > self.backoff_until:  # only extend, never shorten
                 self.backoff_until = new_time
-                logger.error(f"Engaging global throttle for {seconds}s")
+                logger.error(f"Engaging global throttle for {seconds}s: {reason}")
 
 
 GLOBAL_GATE = GlobalTidalGate()

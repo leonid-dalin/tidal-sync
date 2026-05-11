@@ -19,8 +19,10 @@ Tidal Sync is a command-line tool that lets you back up, restore, and clone your
    ```
 2. **Install the package and dependencies:**
     ```bash
+    uv venv
     uv pip install -e .
-    source .venv/bin/activate
+    source .venv/bin/activate # macOS / Linux
+   .venv\Scripts\Activate.ps1 # Windows (PowerShell) ONLY
    ```
 3. **Authenticate your account:**
    ```bash

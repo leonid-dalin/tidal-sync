@@ -6,7 +6,7 @@ Tidal Sync is a command-line tool that lets you back up, restore, and clone your
 
 ## Prerequisites
 
-- macOS, Linux, or Windows
+- macOS, Linux, or Windows (**PowerShell**)
 - [uv](https://docs.astral.sh/uv/) installed on your system
 - An active Tidal account
 
@@ -14,7 +14,7 @@ Tidal Sync is a command-line tool that lets you back up, restore, and clone your
 
 1. **Clone the repository:**
    ```bash
-   git clone [https://github.com/leonid-dalin/tidal-sync](https://github.com/leonid-dalin/tidal-sync)
+   git clone https://github.com/leonid-dalin/tidal-sync
    cd tidal-sync
    ```
 2. **Install the package and dependencies:**

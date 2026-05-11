@@ -9,7 +9,8 @@ import_reports/
 exports/
 account_transfer/
 csv-files-go-here/
-FUTURE.md
+extras/
+roadmap.md
 git-commits.md
 
 # --- Python & Environment ---

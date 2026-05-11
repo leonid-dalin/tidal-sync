@@ -1,6 +1,6 @@
 [project]
 name = "tidal-sync"
-version = "1.0.2"
+version = "1.0.3"
 description = "A powerful, modern CLI tool to backup, restore, and clone full Tidal libraries."
 readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }

@@ -115,6 +115,43 @@ def retry_on_429(max_retries: int = 5, backoff_factor: float = 1.5) -> Callable:
     return decorator
 
 
+def _fetch_blocked_artists(session: tidalapi.Session) -> list[Any]:
+    """
+    Fetches blocked/muted artists directly via the session's internal request engine.
+    """
+    user = session.user
+    if not user or not getattr(user, 'id', None):
+        return []
+
+    endpoint = f"users/{user.id}/blocks/artists"
+
+    items = []
+    offset = 0
+    limit = 50
+
+    while True:
+        params = {"limit": limit, "offset": offset}
+        try:
+            chunk = session.request.map_request(
+                endpoint,
+                params=params,
+                parse=session.parse_artist
+            )
+            if isinstance(chunk, dict) and "items" in chunk:
+                chunk = [session.parse_artist(item.get("item", item)) for item in chunk["items"]]
+        except Exception as e:
+            logger.warning("Failed to fetch blocked artists", error=repr(e))
+            break
+
+        if not chunk:
+            break
+
+        items.extend(chunk)
+        offset += limit
+
+    return items
+
+
 def _fetch_all(api_method: Any, **kwargs: Any) -> list[Any]:
     """
     Exhaustively fetches paginated items from a Tidal API endpoint.
@@ -261,6 +298,15 @@ def export_playlists(session: tidalapi.Session, output_dir: Path) -> None:
         for art in fav_artists:
             writer.writerow([art.name, "Artist", art.id])
 
+    console.print("[cyan]Fetching Blocked Artists (Paginated)...[/cyan]")
+    blocked_artists = _fetch_blocked_artists(session)
+    if blocked_artists:
+        with open(favorites_dir / "Blocked Artists.csv", 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(["Artist name", "Type", "Tidal - id"])
+            for art in blocked_artists:
+                writer.writerow([art.name, "Artist", art.id])
+
     console.print(f"\n[green]Successfully exported {len(playlists)} playlists and all favourites![/green]")
 
 
@@ -312,6 +358,8 @@ def _route_and_import(session: tidalapi.Session, file_path: Path, fallback_name:
         _import_artists(session, file_path, stats)
     elif filename == "Liked Songs.csv":
         _import_tracks(session, file_path, stats, is_favorites=True)
+    elif filename == "Blocked Artists.csv":
+        _import_blocked_artists(session, file_path, stats)
     else:
         p_name = fallback_name or file_path.stem
         _import_tracks(session, file_path, stats, is_favorites=False, playlist_name=p_name)
@@ -557,6 +605,46 @@ def _import_artists(session: tidalapi.Session, file_path: Path, stats: ImportSta
         )
 
     _run_matching_tasks(f"Matching & Adding {len(artists)} artists...", artists, _match_and_add_artist)
+
+
+def _import_blocked_artists(session: tidalapi.Session, file_path: Path, stats: ImportStats) -> None:
+    """
+    Parses an artist CSV, matches entries against Tidal, and blocks/mutes them.
+    """
+    artists = parse_csv(file_path, ArtistRow)
+    if not artists: return
+    user = session.user
+
+    console.print("\n[cyan]Importing Blocked Artists...[/cyan]")
+    with console.status("[cyan]Scanning existing blocked artists...[/cyan]"):
+        existing_blocked_ids = {str(a.id) for a in _fetch_blocked_artists(session)}
+
+    lock = threading.Lock()
+
+    def _execute_block(artist_id: str) -> bool:
+        endpoint = f"users/{user.id}/blocks/artists"
+        response = session.request.request(
+            "POST",
+            endpoint,
+            data={"artistId": artist_id}
+        )
+        return response.ok
+
+    @retry_on_429()
+    def _match_and_block_artist(artist: ArtistRow) -> None:
+        matched_id = str(artist.tidal_id) if artist.tidal_id else None
+        if not matched_id:
+            results = session.search(str(artist.artist_name))
+            res_artists = getattr(results, 'artists', [])
+            if res_artists: matched_id = str(res_artists[0].id)
+
+        _handle_match_result(
+            matched_id, "Blocked Artist", artist.artist_name, "N/A",
+            file_path.name, "Blocked Artists", existing_blocked_ids, stats,
+            lock, add_method=_execute_block
+        )
+
+    _run_matching_tasks(f"Matching & Blocking {len(artists)} artists...", artists, _match_and_block_artist)
 
 
 def clear_library(session: tidalapi.Session, target: ClearTarget) -> None:

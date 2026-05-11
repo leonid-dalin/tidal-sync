@@ -9,9 +9,7 @@ import_reports/
 exports/
 account_transfer/
 csv-files-go-here/
-extras/
-roadmap.md
-git-commits.md
+private/
 
 # --- Python & Environment ---
 __pycache__/

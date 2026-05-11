@@ -27,6 +27,7 @@ Example:
     $ tidal-sync --help
 """
 
+import asyncio
 import typer
 from pathlib import Path
 from typing import Annotated
@@ -37,7 +38,8 @@ from .domain.logger import setup_global_logging
 from .domain.enums import ClearTarget
 from .domain.exceptions import TidalAuthenticationError
 from .auth import get_session, secure_delete_token, _get_all_profiles
-from .sync import import_target, export_playlists, clear_library
+from .sync import import_target_async, export_playlists_async, clear_library_async
+
 
 app = typer.Typer(help="Modern CLI for managing, importing, exporting, and cloning Tidal libraries.")
 console = Console()
@@ -87,7 +89,7 @@ def import_data(
     """
     try:
         session = get_session(profile)
-        import_target(session, target_path)
+        asyncio.run(import_target_async(session, target_path, target_playlist_name=name))
     finally:
         logger.remove()  # Safely flushes the enqueue=True background threads before the CLI exits
 
@@ -102,7 +104,7 @@ def export_all(
     Builds a categorised folder structure at the specified output directory.
     """
     session = get_session(profile)
-    export_playlists(session, output_dir)
+    asyncio.run(export_playlists_async(session, output_dir))
 
 
 @app.command()
@@ -125,7 +127,7 @@ def clear(
 
     try:
         session = get_session(profile)
-        clear_library(session, target)
+        asyncio.run(clear_library_async(session, target))
     except TidalAuthenticationError as e:
         console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
         raise typer.Exit(1)
@@ -134,7 +136,7 @@ def clear(
 @app.command(name="profiles")
 def list_profiles() -> None:
     """
-    Lists all authenticated Tidal profiles saved on this machine.
+    Lists all authenticated Tidal profiles saved on this machine
     """
     profiles = _get_all_profiles()
 

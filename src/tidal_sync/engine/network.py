@@ -1,50 +1,98 @@
+import asyncio
 import time
 from functools import wraps
-from typing import Any, Callable
+from typing import Any, Callable, Awaitable
 from loguru import logger
 from tidalapi.exceptions import TooManyRequests
 
-def retry_on_429(max_retries: int = 5, backoff_factor: float = 1.5) -> Callable:
+
+class GlobalTidalGate:
+    def __init__(self):
+        self.backoff_until: float = 0.0
+        self.lock = asyncio.Lock()
+
+    async def pre_flight_check(self):
+        """Forces workers to pause if a sibling thread triggered a backoff"""
+        async with self.lock:
+            now = time.time()
+            if now < self.backoff_until:
+                remaining = self.backoff_until - now
+                logger.warning(f"Global Gate active. Sleeping for {remaining:.1f}s")
+                await asyncio.sleep(remaining)
+
+    async def trigger_backoff(self, seconds: float):
+        """Called by a worker that gets a 429 or 403"""
+        async with self.lock:
+            new_time = time.time() + seconds
+            if new_time > self.backoff_until:  # only extend, never shorten
+                self.backoff_until = new_time
+                logger.error(f"Engaging global throttle for {seconds}s")
+
+
+GLOBAL_GATE = GlobalTidalGate()
+
+async def execute_network(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Executes a synchronous Tidal API call safely behind the Global Gate"""
+    retries = 0
+    while retries < 5:
+        await GLOBAL_GATE.pre_flight_check()
+        try:
+            return await asyncio.to_thread(func, *args, **kwargs)
+        except TooManyRequests as e:
+            retry_after = getattr(e, 'retry_after', 60.0)
+            if retry_after <= 0: retry_after = 60.0
+            await GLOBAL_GATE.trigger_backoff(retry_after, "HTTP 429 Too Many Requests")
+            retries += 1
+        except Exception as e:
+            error_str = str(e).lower()
+            if "429" in error_str or "too many requests" in error_str:
+                await GLOBAL_GATE.trigger_backoff(60.0, "Generic 429 Too Many Requests")
+                retries += 1
+            elif "403" in error_str and ("abuse" in error_str or "11003" in error_str):
+                await GLOBAL_GATE.trigger_backoff(1800.0, "HTTP 403 Abuse Detected (30m Lock)")
+                retries += 1
+            else:
+                raise
+    raise Exception(f"Max retries exceeded for {func.__name__} due to rate limiting.")
+
+async def fetch_all_async(api_method: Any, **kwargs: Any) -> list[Any]:
     """
-    Handles Tidal API rate limits (HTTP 429) automatically via exponential backoff.
-
-    If the API returns a 'retry_after' value, it waits exactly that long.
-    Otherwise, it falls back to multiplying the delay by the backoff factor.
-
-    Args:
-        max_retries (int): Maximum number of retry attempts. Defaults to 5.
-        backoff_factor (float): Multiplier for the delay time. Defaults to 1.5.
-
-    Returns:
-        Callable: The decorated function.
+    Async wrapper for exhaustive pagination. Offloads the blocking
+    API call to a background thread to keep the event loop free
     """
-    def decorator(func: Callable) -> Callable:
-        @wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            retries = 0
-            while retries < max_retries:
-                try:
-                    return func(*args, **kwargs)
-                except TooManyRequests as e:
-                    retry_after = getattr(e, 'retry_after', -1)
-                    sleep_time = retry_after if retry_after > 0 else (backoff_factor ** retries)
-                    logger.warning("Rate limited (429)", retry_after=sleep_time, attempt=retries+1)
-                    time.sleep(sleep_time)
-                    retries += 1
-                except Exception as e:
-                    # Fallback catch for generic 429s parsed as standard HTTP errors
-                    if "429" in str(e):
-                        time.sleep(backoff_factor ** retries)
-                        retries += 1
-                    else:
-                        raise
-            return func(*args, **kwargs)  # Final attempt
-        return wrapper
-    return decorator
+    return await execute_network(_fetch_all_sync, api_method, **kwargs)
+
+def _fetch_all_sync(api_method: Any, **kwargs: Any) -> list[Any]:
+    items = []
+    offset = 0
+    limit = 50
+    last_chunk_ids = []
+
+    while True:
+        try:
+            chunk = api_method(limit=limit, offset=offset, **kwargs)
+        except TypeError:
+            res = api_method(**kwargs)
+            return res if isinstance(res, list) else list(res)
+
+        if not chunk:
+            break
+
+        current_chunk_ids = [getattr(item, 'id', id(item)) for item in chunk]
+
+        # Infinite loop guard: detects if the API ignores the offset and repeats pages
+        if offset > 0 and current_chunk_ids == last_chunk_ids:
+            break
+
+        items.extend(chunk)
+        last_chunk_ids = current_chunk_ids
+        offset += limit
+
+    return items
 
 def fetch_blocked_artists(session: tidalapi.Session) -> list[Any]:
     """
-    Fetches blocked/muted artists directly via the session's internal request engine.
+    Fetches blocked/muted artists directly via the session's internal request engine
     """
     user = session.user
     if not user or not getattr(user, 'id', None):
@@ -74,49 +122,6 @@ def fetch_blocked_artists(session: tidalapi.Session) -> list[Any]:
             break
 
         items.extend(chunk)
-        offset += limit
-
-    return items
-
-
-def fetch_all(api_method: Any, **kwargs: Any) -> list[Any]:
-    """
-    Exhaustively fetches paginated items from a Tidal API endpoint.
-
-    Tidal limits responses to 50 items and occasionally drops region-locked
-    tracks from the count. This helper bypasses those limits by manually
-    advancing the offset until the server returns no new items.
-
-    Args:
-        api_method (Any): The Tidal API function to call (e.g., session.user.playlists).
-        **kwargs: Additional arguments to pass to the API method.
-
-    Returns:
-        list[Any]: A complete list of all items from the endpoint.
-    """
-    items = []
-    offset = 0
-    limit = 50
-    last_chunk_ids = []
-
-    while True:
-        try:
-            chunk = api_method(limit=limit, offset=offset, **kwargs)
-        except TypeError:
-            res = api_method(**kwargs)
-            return res if isinstance(res, list) else list(res)
-
-        if not chunk:
-            break
-
-        current_chunk_ids = [getattr(item, 'id', id(item)) for item in chunk]
-
-        # Infinite loop guard: detects if the API ignores the offset and repeats pages
-        if offset > 0 and current_chunk_ids == last_chunk_ids:
-            break
-
-        items.extend(chunk)
-        last_chunk_ids = current_chunk_ids
         offset += limit
 
     return items

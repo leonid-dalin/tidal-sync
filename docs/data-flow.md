@@ -6,7 +6,7 @@ It explains how the tool moves data through the thread pool, interacts with the 
 
 ## 1. Ingestion and validation (`parse_csv`)
 
-The process begins when the CLI routes a file to the `_import_tracks` function. The tool opens the file using `utf-8-sig` encoding to safely strip Byte Order Marks (BOM) commonly injected by Windows or Excel exports.
+he process begins when the CLI routes a file to the `import_tracks_category_async` function within `engine/importer.py`. The tool opens the file using `utf-8-sig` encoding to safely strip Byte Order Marks (BOM) commonly injected by Windows or Excel exports.
 
 The `csv.DictReader` parses the rows, passing them into the Pydantic `TrackRow` model. This model standardises the data:
 * It maps legacy column headers (like "Artist Name(s)") to strict internal properties.
@@ -19,7 +19,7 @@ The tool does not upload tracks blindly. It must translate the local CSV data in
 
 The tool fetches the target playlist (or the user's "Liked Songs") via `tidalapi` and builds a local `set` of `existing_track_ids`. It then spins up an `asyncio.TaskGroup`. 
 
-For each track, an asynchronous task runs `_match_single_track`, attempting to find a match in this specific order:
+For each track, an asynchronous task runs `_resolve_track_metadata_to_id`, attempting to find a match in this specific order:
 1. **Direct ID:** If the CSV contains a `tidal_id`, it uses it immediately.
 2. **ISRC Match:** If an International Standard Recording Code is present, it queries the Tidal API via `session.search(f"isrc:{track.isrc}")`. This ensures 1-to-1 high-fidelity matching regardless of region or naming variations.
 3. **Text Fallback:** It falls back to querying the API using the computed `search_query`.
@@ -36,7 +36,7 @@ The tool slices the `track_ids_to_add` list into arrays of 50 (`CHUNK_SIZE`). It
 
 Tidal occasionally region-locks specific tracks. If a single track within a 50-item chunk is geographically locked, Tidal rejects the entire POST request with an `HTTPError` or `ObjectNotFound` exception. 
 
-Instead of failing the whole batch, the `_bisect_upload` function intercepts the exception and applies a recursive bisection algorithm:
+Instead of failing the whole batch, the `upload_batch_with_bisection_recovery` function (located in `engine/bisection.py`) intercepts the exception and applies a recursive bisection algorithm:
 1. It splits the rejected 50-item chunk into two 25-item chunks.
 2. It attempts to upload both halves. 
 3. The half containing the locked track fails again, triggering another split, while the clean half uploads successfully.

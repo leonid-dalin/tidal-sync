@@ -17,12 +17,24 @@ Manages the OAuth lifecycle and local storage.
 * **Strict Storage:** Writes session tokens to `~/.tidal_sync` and immediately applies strict POSIX permissions (`chmod 600`).
 * **Secure Wiping:** When a user logs out, the system performs a logical zero-fill overwrite on the token file before deleting it, mitigating disk data recovery risks.
 
-### `sync.py` (Synchronisation Engine)
-Orchestrates the library transfers. It uses `asyncio.TaskGroup` to match and upload tracks. It groups matched tracks into batches of 50 to avoid HTTP 413 (Payload Too Large) errors. It automatically refreshes the playlist ETag before each chunk to prevent server-side version collisions (HTTP 412). Tidal fails entire batch uploads if a single track is geographically locked; the `_bisect_upload` function catches this, splits the array in half, and retries both halves recursively to isolate and drop the poison track.
-
 ## Engine Layer (`/engine/`)
 
-The engine handles concurrent operations, rate limiting, and data ingestion.
+The engine handles concurrent operations, rate limiting, data ingestion, and synchronisation logic.
+
+### `importer.py`
+Orchestrates data ingestion, translates local CSV metadata into Tidal database IDs, and stages chunked uploads. It automatically refreshes playlist ETags before each chunk to prevent server-side version collisions (HTTP 412).
+
+### `exporter.py`
+Handles network fetching, captures point-in-time snapshots of dynamic algorithmic mixes, and serialises Tidal structures (including V2 folders) back to local CSV files.
+
+### `wiping.py`
+Manages destructive account clears via headless worker groups. It safely absorbs isolated 404/500 errors and uses raw HTTP bypasses to eradicate undocumented V2 ghost folders left behind by standard playlist deletion.
+
+### `bisection.py`
+Contains the recursive bisection algorithm used during batch uploads. Tidal fails entire batch uploads if a single track is geographically locked; this module catches the failure, splits the array in half, and retries both halves recursively to isolate and drop the poison track without halting the job.
+
+### `folders.py`
+Provides raw HTTP interventions (mimicking browser/web-player headers) to manage V2 API folder creation, assignment, and fetching. This prevents JSON decoding crashes triggered when the standard `tidalapi` wrapper hits empty success response bodies.
 
 ### `network.py`
 Centralises all Tidal API calls. It uses a `GlobalTidalGate` to monitor for rate limits (429) or abuse flags (403). If Tidal throttles the tool, the gate instantly pauses all sibling workers, preventing account bans.

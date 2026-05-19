@@ -1,19 +1,3 @@
-# tidal-sync: A high-performance tool for backing up and cloning Tidal libraries.
-# Copyright (C) 2026 Leonid Dalin
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published
-# by the Free Software Foundation, version 3 or later of the License.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program. If not, see <https://www.gnu.org/licenses/>.
-#
-# Contact: infoLeonid@protonMail.com
 """
 CSV parsing and data sanitisation module.
 
@@ -24,6 +8,7 @@ schemas to ensure metadata integrity before it reaches the synchronisation
 engine.
 """
 
+import re
 import csv
 import io
 from pathlib import Path
@@ -32,6 +17,80 @@ from pydantic import BaseModel, ValidationError
 from loguru import logger
 
 T = TypeVar('T', bound=BaseModel)
+
+
+def normalises_playlist_id(raw_id: str | Any) -> str:
+    """
+    Normalises Tidal IDs to reconcile V1 and V2 API differences.
+    Strips URN prefixes (e.g., 'trn:playlist:') and ensures lowercase formatting.
+    """
+    if not raw_id:
+        return ""
+
+    clean_id = str(raw_id).strip().lower()
+    if clean_id.startswith("trn:playlist:"):
+        clean_id = clean_id.replace("trn:playlist:", "")
+
+    return clean_id
+
+
+def sanitize_filename(name: str) -> str:
+    """Removes illegal OS characters to ensure safe cross-platform file saving."""
+    return re.sub(r'[<>:"/\\|?*]', '_', name).strip()
+
+
+def write_albums_csv_sync(file_path: Path, albums: list[Any]) -> None:
+    """Synchronous I/O bound CSV writer for albums."""
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(file_path, mode='w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.writer(f)
+        writer.writerow(["album_name", "artist_name", "tidal_id"])
+
+        for album in albums:
+            artist_name = getattr(getattr(album, 'artist', None), 'name', 'Unknown')
+            writer.writerow([
+                getattr(album, 'name', getattr(album, 'title', 'Unknown')),
+                artist_name,
+                str(getattr(album, 'id', ''))
+            ])
+
+
+def write_artists_csv_sync(file_path: Path, artists: list[Any]) -> None:
+    """Synchronous I/O bound CSV writer for artists."""
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(file_path, mode='w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.writer(f)
+        writer.writerow(["artist_name", "tidal_id"])
+
+        for artist in artists:
+            writer.writerow([
+                getattr(artist, 'name', getattr(artist, 'title', 'Unknown')),
+                str(getattr(artist, 'id', ''))
+            ])
+
+            
+def write_tracks_csv_sync(file_path: Path, tracks: Sequence[Any]) -> None:
+    """
+    Synchronous I/O bound CSV writer.
+    Designed to be offloaded to a thread pool to avoid blocking the async event loop.
+    """
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(file_path, mode='w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.writer(f)
+        writer.writerow(["track_name", "artist_name", "album_name", "isrc", "tidal_id"])
+
+        for track in tracks:
+            # Safely chain getattr to prevent crashes if metadata is missing/malformed
+            artist_name = getattr(getattr(track, 'artist', None), 'name', 'Unknown')
+            album_name = getattr(getattr(track, 'album', None), 'name', 'Unknown')
+
+            writer.writerow([
+                getattr(track, 'name', 'Unknown'),
+                artist_name,
+                album_name,
+                getattr(track, 'isrc', ''),
+                str(getattr(track, 'id', ''))
+            ])
 
 
 def _clean_row(row: dict[Any, Any]) -> dict[str, Any]:

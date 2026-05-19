@@ -19,7 +19,7 @@
 Command-line interface for tidal-sync.
 
 This module defines the terminal commands using Typer. It routes user
-inputs to the core authentication, synchronisation, and clearing functions,
+inputs to the core authentication, synchronisation, and clearance engines,
 and manages safety prompts for destructive actions.
 
 Example:
@@ -38,7 +38,14 @@ from .domain.logger import setup_global_logging
 from .domain.enums import ClearTarget
 from .domain.exceptions import TidalAuthenticationError
 from .auth import get_session, secure_delete_token, _get_all_profiles
-from .sync import import_target_async, export_playlists_async, clear_library_async
+
+from .engine.importer import import_collection_from_disk
+from .engine.exporter import (
+    export_user_playlists_to_disk,
+    export_user_favourites_to_disk,
+    export_algorithmic_mixes_to_disk
+)
+from .engine.wiping import purge_target_category_async
 
 
 app = typer.Typer(help="Modern CLI for managing, importing, exporting, and cloning Tidal libraries.")
@@ -54,7 +61,7 @@ def login(
     Authenticates a Tidal account and saves it to a local profile.
 
     Use the `--profile` flag to keep multiple active logins simultaneously.
-    This is necessary if you want to clone an account.
+    This is necessary if you intend to clone an account.
 
     Args:
         profile (str): The name for the saved profile. Defaults to 'default'.
@@ -62,8 +69,9 @@ def login(
     try:
         get_session(profile)
     except TidalAuthenticationError as e:
-            console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
-            raise typer.Exit(1)
+        console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+        raise typer.Exit(1)
+
 
 @app.command()
 def logout(
@@ -89,7 +97,7 @@ def import_data(
 
     If the target path is a directory, the tool recursively processes all
     contained CSV files. Existing items in the target library are automatically
-    skipped to prevent duplicates.
+    skipped to prevent duplication.
 
     Args:
         target_path (Path): Path to a CSV file or a directory of CSVs.
@@ -98,9 +106,10 @@ def import_data(
     """
     try:
         session = get_session(profile)
-        asyncio.run(import_target_async(session, target_path, target_playlist_name=name))
+        asyncio.run(import_collection_from_disk(session, target_path, target_playlist_name=name))
     finally:
         logger.remove()  # Safely flushes the enqueue=True background threads before the CLI exits
+
 
 @app.command(name="export")
 def export_all(
@@ -118,7 +127,14 @@ def export_all(
         profile (str): The authentication profile to export from.
     """
     session = get_session(profile)
-    asyncio.run(export_playlists_async(session, output_dir))
+
+    async def run_exports():
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(export_user_playlists_to_disk(session, output_dir))
+            tg.create_task(export_user_favourites_to_disk(session, output_dir))
+            tg.create_task(export_algorithmic_mixes_to_disk(session, output_dir))
+
+    asyncio.run(run_exports())
 
 
 @app.command()
@@ -128,7 +144,7 @@ def clear(
     force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt")] = False
 ) -> None:
     """
-    Destructively wipes a specific category of data from a Tidal account.
+    Destructively removes a specific category of data from a Tidal account.
 
     Provides a manual confirmation prompt unless the `--force` flag is used.
     This action is irreversible.
@@ -146,7 +162,7 @@ def clear(
 
     try:
         session = get_session(profile)
-        asyncio.run(clear_library_async(session, target))
+        asyncio.run(purge_target_category_async(session, target))
     except TidalAuthenticationError as e:
         console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
         raise typer.Exit(1)

@@ -54,8 +54,8 @@ async def upload_batch_with_bisection_recovery(
         await stats.add_added(len(chunk))
         for tid in chunk:
             logger.bind(audit=True).debug("Item Added", type="Track", id=tid, dest=dest_name)
-        progress.advance(progress_bar, task_id, advance=len(chunk))
-
+        progress_bar.advance(task_id, advance=len(chunk))
+        
     except (HTTPError, ObjectNotFound) as e:
         # GUARD: Do not bisect if the error is a 412 ETag mismatch.
         # A 412 indicates a server-side version collision, not a broken track.
@@ -69,7 +69,7 @@ async def upload_batch_with_bisection_recovery(
                 await stats.add_added(len(chunk))
                 for tid in chunk:
                     logger.bind(audit=True).debug("Item Added", type="Track", id=tid, dest=dest_name)
-                progress.advance(progress_bar, task_id, advance=len(chunk))
+                progress_bar.advance(task_id, advance=len(chunk))
                 return
             except Exception as retry_e:
                 e = retry_e
@@ -82,7 +82,7 @@ async def upload_batch_with_bisection_recovery(
         await _bisect_recursive_async(
             chunk, upload_callback, stats, staged_tracks_map, dest_name
         )
-        progress.advance(progress_bar, task_id, advance=len(chunk))
+        progress_bar.advance(task_id, advance=len(chunk))
         await asyncio.sleep(MEDIUM_DELAY * 2)
 
 

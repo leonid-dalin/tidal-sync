@@ -159,8 +159,8 @@ def parse_csv(file_path: Path, model_class: type[T]) -> list[T]:
             cleaned_row = _clean_row(row)
             model = model_class(**cleaned_row)
             items.append(model)
-        except ValidationError as e:
-            logger.error("CSV Validation Error", file=file_path.name, error=str(e))
+        except ValidationError as _:
+            logger.debug("Skipped malformed/empty CSV row", file=file_path.name)
         except Exception as e:
             logger.warning("Unexpected error parsing row", file=file_path.name, error=str(e))
 

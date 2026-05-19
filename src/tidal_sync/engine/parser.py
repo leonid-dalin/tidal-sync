@@ -12,7 +12,7 @@ import re
 import csv
 import io
 from pathlib import Path
-from typing import TypeVar, Any
+from typing import TypeVar, Any, Sequence
 from pydantic import BaseModel, ValidationError
 from loguru import logger
 

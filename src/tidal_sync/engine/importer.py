@@ -196,7 +196,8 @@ async def import_tracks_category_async(
         async def _upload_chunk_async(batch: list[str]) -> None:
             nonlocal playlist
             if is_favorites and hasattr(user, 'favorites'):
-                await execute_network(user.favorites.add_track, batch)
+                for tid in batch:
+                    await execute_network(user.favorites.add_track, tid)
             elif playlist:
                 playlist = await execute_network(session.playlist, playlist.id)  # ETag refresh
                 await execute_network(playlist.add, batch)

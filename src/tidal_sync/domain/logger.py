@@ -59,21 +59,28 @@ REDACT_PATTERNS = [
 ]
 
 
-def redact_filter(record: Any) -> bool:
-    for pattern, replacement in REDACT_PATTERNS:
-        record["message"] = pattern.sub(replacement, record["message"])
-        if "error" in record["extra"] and isinstance(record["extra"]["error"], str):
-            record["extra"]["error"] = pattern.sub(replacement, record["extra"]["error"])
-
+def audit_filter(record: Any) -> bool:
     return record["extra"].get("audit", False)
 
 
 def json_formatter(record: Any) -> str:
+    message = record["message"]
+    error_val = record["extra"].get("error")
+
+    for pattern, replacement in REDACT_PATTERNS:
+        message = pattern.sub(replacement, message)
+        if isinstance(error_val, str):
+            error_val = pattern.sub(replacement, error_val)
+
+    clean_extra = {k: v for k, v in record["extra"].items() if k not in ("audit", "serialized", "error")}
+    if error_val is not None:
+        clean_extra["error"] = error_val
+
     record["extra"]["serialized"] = orjson.dumps({
         "timestamp": record["time"].strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         "level": record["level"].name.lower(),
-        "message": record["message"],
-        "extra": {k: v for k, v in record["extra"].items() if k not in ("audit", "serialized")}
+        "message": message,
+        "extra": clean_extra
     }).decode()
 
     return "{extra[serialized]}\n"
@@ -97,7 +104,7 @@ def setup_audit_logging(report_dir: Path) -> Path:
         log_file,
         format=json_formatter,
         level="DEBUG",
-        filter=redact_filter,
+        filter=audit_filter,
         rotation="10 MB",
         retention="7 days",
         compression="gz",

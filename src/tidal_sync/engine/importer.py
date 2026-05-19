@@ -15,7 +15,7 @@ from loguru import logger
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
-from ..domain.models import TrackRow
+from ..domain.models import TrackRow, AlbumRow
 from ..domain.protocols import TidalUser, CHUNK_SIZE
 from ..domain.logger import setup_audit_logging
 
@@ -101,6 +101,8 @@ async def resolve_and_import_playlist(
     # Routing logic (assuming other importers are defined here)
     if filename == "Liked Songs.csv":
         await import_tracks_category_async(session, file_path, stats, is_favorites=True)
+    elif filename == "Liked Albums.csv":
+        await import_albums_async(session, file_path, stats)
     else:
         p_name = fallback_name or file_path.stem
         await import_tracks_category_async(
@@ -220,6 +222,55 @@ async def import_tracks_category_async(
         f"{stats.failed - initial_failed} failed "
         f"[dim](Session Total: {stats.added})[/dim]\n"
     )
+
+
+async def import_albums_async(session: tidalapi.Session, file_path: Path, stats: ImportStats) -> None:
+    """
+    Matches and saves albums to the user's 'Liked Albums' collection.
+
+    Parses the source file and cross-references it against the user's
+    existing liked albums to prevent duplicate network calls. Executes
+    the search and addition operations concurrently.
+    """
+    albums = await asyncio.to_thread(parse_csv, file_path, AlbumRow)
+    if not albums:
+        return
+
+    user = cast(TidalUser, cast(object, session.user))
+
+    # Guard clause to ensure favorites exists
+    if not hasattr(user, 'favorites'):
+        logger.error("User profile does not support favorites.")
+        return
+
+    console.print("[cyan]Importing Liked Albums...[/cyan]")
+    with console.status("[cyan]Scanning existing albums...[/cyan]"):
+        existing_albums = await fetch_all_async(user.favorites.albums)
+        existing_album_ids = {str(a.id) for a in existing_albums}
+
+    async def _match_and_add_album_async(album: AlbumRow) -> None:
+        matched_id = str(album.tidal_id) if album.tidal_id else None
+
+        if not matched_id:
+            results = await execute_network(session.search, f"{album.album_name} {album.artist_name}")
+            res_albums = getattr(results, 'albums', [])
+            if res_albums:
+                matched_id = str(res_albums[0].id)
+
+        async def _async_add(a_id: str) -> None:
+            # execute_network handles the async.to_thread wrapping internally
+            await execute_network(user.favorites.add_album, a_id)
+
+        failure_reason = "Text search failed" if not matched_id else "N/A"
+
+        await handle_match_result_async(
+            matched_id, "Album", album.album_name, album.artist_name,
+            file_path.name, "Liked Albums", existing_album_ids, stats,
+            add_method=_async_add,
+            failure_reason=failure_reason
+        )
+
+    await run_matching_tasks_async(f"Matching & Adding {len(albums)} albums...", albums, _match_and_add_album_async)
 
 
 

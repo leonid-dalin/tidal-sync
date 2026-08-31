@@ -8,6 +8,7 @@ asynchronous tasks. It intercepts HTTP 429 (Too Many Requests) and HTTP 403
 import asyncio
 import time
 from typing import Any, Callable
+import tidalapi
 from loguru import logger
 from tidalapi.exceptions import TooManyRequests
 

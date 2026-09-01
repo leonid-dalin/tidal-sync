@@ -67,7 +67,7 @@ Owns the undocumented V2 folder endpoints that `tidalapi` does not expose. Every
 
 ### `network.py` (Gatekeeper and transport)
 
-Centralises every Tidal API call. `GlobalTidalGate` watches for rate limits (429) and abuse flags (403): when one worker is throttled it extends a shared backoff window, and sibling workers sleep in their pre-flight check instead of opening new connections, which prevents account bans. `execute_network` runs a synchronous Tidal call on a thread behind the gate with bounded retries. `fetch_all_async` paginates exhaustively (with a same-page guard so an offset-ignoring endpoint cannot loop forever). `fetch_blocked_artists` reads the user blocklist through the same guard. `CHUNK_SIZE` (50) lives here because it is a transport limit.
+Centralises every Tidal API call. `GlobalTidalGate` watches for rate limits (429) and abuse flags (403): when one worker is throttled it extends a shared backoff window, and sibling workers sleep in their pre-flight check instead of opening new connections, which prevents account bans. `execute_network` runs a synchronous Tidal call on a thread behind the gate with bounded retries. `fetch_all_async` paginates exhaustively (with a page-signature guard so an offset-ignoring endpoint cannot loop forever). `fetch_blocked_artists` reads the user blocklist through the same guard. `CHUNK_SIZE` (50) lives here because it is a transport limit.
 
 ### `match_policy.py` (Import decisions)
 

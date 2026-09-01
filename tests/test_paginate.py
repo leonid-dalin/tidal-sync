@@ -1,8 +1,10 @@
 """The shared paginate() helper covers the four former hand-rolled loops.
 
-These tests pin the duplicate-page guard, the A,B,A,B cycle guard (which the
-old last-page-only guard failed), the short-page stop, and advancing the offset
-by the rows actually kept rather than the page size.
+These tests pin the page-signature guard (a repeated page or an A,B,A,B cycle
+stops pagination), the short-page stop, the duplicate-survival rule (a track
+legitimately repeated across pages stays in the export), and the offset
+advancing by len(page) so a server that drops region-locked rows does not
+silently skip the next page.
 """
 
 import asyncio
@@ -45,8 +47,8 @@ def test_duplicate_page_stops_after_one():
     assert [item.id for item in result] == [1, 2]
 
 
-def test_paginate_sync_advances_by_page_size_and_cycles_out():
-    """The sync twin dedupes and cycles out while paging by requested offset."""
+def test_paginate_sync_advances_by_len_page_and_cycles_out():
+    """The sync twin pages by len(page) and exits when a page repeats."""
     page_a = [_Item(1), _Item(2)]
     page_b = [_Item(3), _Item(4)]
     fetch_page, calls = _pages(page_a, page_b, page_a)
@@ -54,8 +56,26 @@ def test_paginate_sync_advances_by_page_size_and_cycles_out():
     result = paginate_sync(fetch_page, page_size=2, key=_id_key)
 
     assert [item.id for item in result] == [1, 2, 3, 4]
-    # Advance is by page size: 0, 2, 4; the repeated page A at offset 4 stops it.
+    # Advance is by len(page): 0, 2, 4; the repeated page A at offset 4 stops it.
     assert calls == [0, 2, 4]
+
+
+def test_a_legitimately_repeated_item_survives_pagination():
+    """A playlist may hold the same track twice. Export must not collapse it.
+
+    Pages advance by len(page) (0, 2, 4). At offset 4 the server is empty
+    and pagination ends. id 1 must appear twice in the result, in the order
+    the server delivered it.
+    """
+    pages = {
+        0: [_Item(1), _Item(2)],
+        2: [_Item(1), _Item(3)],
+        4: [],
+    }
+
+    result = paginate_sync(lambda offset, limit: pages.get(offset, []), page_size=2)
+
+    assert [item.id for item in result] == [1, 2, 1, 3]
 
 
 def test_cycle_ab_ab_stops_after_ab():
@@ -80,14 +100,13 @@ def test_short_page_stops():
     assert [item.id for item in result] == list(range(60))
 
 
-def test_offset_advances_by_rows_kept_not_page_size():
-    """When the server drops a row each page, offset must track kept rows.
+def test_offset_advances_by_len_page_so_dropped_rows_do_not_skip():
+    """When the server drops a row each page, offset must track delivered rows.
 
-    The fake serves a finite id space (1..30) and omits id 3 from whichever
-    page would contain it (region-locked). Each 10-row page therefore keeps 9
-    rows. If paginate advanced by the page size (10) it would overshoot row 10
-    and stop early; advancing by len(fresh) it walks the whole space and the
-    server returns empty once offset passes 30.
+    The fake serves ids 1..30 and drops id 3 (region-locked) from every
+    page that contains it. Advancing by the page size (10) would skip past
+    ids 11 onward once id 3 is dropped; advancing by len(page) walks the
+    whole space and the server returns empty once offset passes 30.
     """
     offsets_seen: list[int] = []
 
@@ -100,10 +119,46 @@ def test_offset_advances_by_rows_kept_not_page_size():
 
     result = asyncio.run(paginate(fetch_page, page_size=10, key=_id_key))
 
-    # id 3 is region-locked, so the server never returns it.
-    assert {item.id for item in result} == set(range(1, 31)) - {3}
-    # Kept pages advance 0, 9, 18, 27; the trailing probe hits empty.
-    assert offsets_seen[:-1] == [0, 9, 18, 27]
+    # id 3 is region-locked. id 10 sits at the boundary: page 0 returns it
+    # (the last of its 9 rows) and the probe at offset 9 returns it again.
+    # Comparing lists (not sets) catches a dropped duplicate: a set would
+    # hide the bug.
+    assert [item.id for item in result] == [
+        1,
+        2,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+    ]
+    # First page drops id 3 and yields 9 rows, so the next probe is offset 9.
+    # Subsequent pages are full (10 rows), advancing 19, 29. Offset 29 keeps
+    # only id 30 (4 ids past the filter), advancing to 30. Offset 30 empties.
+    assert offsets_seen == [0, 9, 19, 29, 30]
 
 
 def test_stop_on_short_page_false_continues_until_empty():

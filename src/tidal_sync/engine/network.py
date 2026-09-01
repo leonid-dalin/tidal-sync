@@ -231,26 +231,30 @@ async def paginate(
     stop_on_short_page: bool = False,
 ) -> list[Any]:
     """
-    Exhausts a Tidal offset-paginated endpoint, returning every unique item.
+    Exhausts a Tidal offset-paginated endpoint, returning every row the server
+    delivered.
 
     The four call sites that previously hand-rolled this loop now share it.
     Three behaviours matter and must not regress:
 
-    * The offset advances by the count of rows actually kept (`len(fresh)`),
-      not the requested page size. Tidal silently drops region-locked rows
-      from a page, so advancing by the page size would skip later rows.
-    * Duplicates are tracked in a `set` of seen ids, not just the previous
-      page. That way an A, B, A, B cycle terminates, where a last-page-only
-      guard would loop forever.
-    * When `stop_on_short_page` is set, a page shorter than `page_size`
-      ends pagination, matching the folder endpoints' contract.
+    * Every row the server returned is appended to `items`, including rows
+      whose id appeared on an earlier page. The importer passes
+      `allow_duplicates=True` because Tidal playlists genuinely do support
+      the same track twice, and a backup must round-trip that.
+    * Termination tracks the *shape* of every page it has already seen, not
+      the ids inside it. A server that ignores the offset returns the same
+      page shape (or cycles through A, B, A, B) and the loop exits; a server
+      that returns a genuinely new page shape keeps going.
+    * The offset advances by `len(page)`, not the requested page size. Tidal
+      silently drops region-locked rows from a page, so advancing by the
+      page size would skip later rows.
 
     `fetch_page(offset, limit)` returns the raw items for one page. It may be
     synchronous or return an awaitable; either way it is awaited if needed.
     """
     key_fn = key or _id_key
     items: list[Any] = []
-    seen: set[str] = set()
+    seen_pages: set[tuple[str, ...]] = set()
     offset = 0
 
     while True:
@@ -260,19 +264,18 @@ async def paginate(
         if not page:
             break
 
-        fresh = [it for it in page if key_fn(it) not in seen]
-        if offset > 0 and not fresh:
-            # Every row on this page was already delivered: the server is
-            # ignoring the offset and repeating itself.
+        signature = tuple(key_fn(it) for it in page)
+        if signature in seen_pages:
+            # The server is ignoring the offset and replaying a page we
+            # already recorded; stop rather than spin forever.
             break
+        seen_pages.add(signature)
 
-        for it in fresh:
-            seen.add(key_fn(it))
-            items.append(it)
+        items.extend(page)
 
-        # Advance by the rows kept, not the page size: a server that drops
-        # region-locked rows would otherwise skip later rows.
-        offset += len(fresh)
+        # Advance by the rows actually delivered, not the page size: a server
+        # that drops region-locked rows would otherwise skip later rows.
+        offset += len(page)
 
         if stop_on_short_page and len(page) < page_size:
             break
@@ -291,20 +294,16 @@ def paginate_sync(
     Synchronous twin of `paginate` for callers that run inside
     `asyncio.to_thread` or a plain thread.
 
-    Identical loop shape to `paginate`: dedupe via a seen-id set, and stop on
-    an empty page, a fully-repeated page, or a short page. Splitting it out
-    keeps the sync callers free of `asyncio.run`, which deadlocks when a live
-    event loop already owns the thread.
-
-    Unlike the async `paginate`, this advances the offset by the requested
-    page size, not by the rows kept: the generic tidalapi endpoints page by
-    requested offset, and a server-side raise deep in pagination must surface
-    rather than be truncated away by an early empty page. The folders V2
-    endpoints are the ones that drop rows, and they use the async helper.
+    The loop body matches `paginate` step for step: it keeps every row the
+    server delivered (Tidal playlists allow duplicates), it terminates when
+    a page's signature has already been recorded, and the offset advances by
+    `len(page)`. Splitting it out keeps the sync callers free of
+    `asyncio.run`, which deadlocks when a live event loop already owns the
+    thread.
     """
     key_fn = key or _id_key
     items: list[Any] = []
-    seen: set[str] = set()
+    seen_pages: set[tuple[str, ...]] = set()
     offset = 0
 
     while True:
@@ -312,15 +311,15 @@ def paginate_sync(
         if not page:
             break
 
-        fresh = [it for it in page if key_fn(it) not in seen]
-        if offset > 0 and not fresh:
+        signature = tuple(key_fn(it) for it in page)
+        if signature in seen_pages:
+            # The server is ignoring the offset and replaying a page we
+            # already recorded; stop rather than spin forever.
             break
+        seen_pages.add(signature)
 
-        for it in fresh:
-            seen.add(key_fn(it))
-            items.append(it)
-
-        offset += page_size
+        items.extend(page)
+        offset += len(page)
 
         if stop_on_short_page and len(page) < page_size:
             break

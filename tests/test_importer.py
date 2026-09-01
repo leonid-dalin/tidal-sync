@@ -7,6 +7,7 @@ what happened.
 
 import pytest
 
+from tidal_sync.domain.exceptions import BackupFileError, TidalRateLimitError, TidalTransientError
 from tidal_sync.domain.models import TrackRow
 from tidal_sync.engine.importer import (
     ImportStats,
@@ -29,7 +30,7 @@ def test_undecodable_bytes_are_not_reported_as_success(tmp_path):
     bad = tmp_path / "Bad.csv"
     bad.write_bytes(b"\xff\xfe\x00\x01not a csv at all")
 
-    with pytest.raises(ValueError, match="no valid rows"):
+    with pytest.raises(BackupFileError, match="no valid rows"):
         parse_csv(bad, TrackRow)
 
 
@@ -37,7 +38,7 @@ def test_a_headerless_file_is_rejected(tmp_path):
     empty = tmp_path / "Headerless.csv"
     empty.write_text("", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(BackupFileError, match="empty"):
         parse_csv(empty, TrackRow)
 
 
@@ -186,7 +187,7 @@ async def test_one_failed_match_still_resolves_the_others(tmp_path):
 
     async def failing_resolve(session, track_name, artist_name, tidal_id=None, isrc=None):
         if track_name == "Drop":
-            raise RuntimeError("network exhausted")
+            raise TidalTransientError("network exhausted")
         return await real_resolve(
             session,
             track_name=track_name,
@@ -208,3 +209,86 @@ async def test_one_failed_match_still_resolves_the_others(tmp_path):
     assert sorted(session.user.playlist.added) == ["1", "3"], session.user.playlist.added
     assert stats.failed == 1, "the dropped track is counted as a failure"
     assert stats.added == 2, "the surviving tracks are recorded as added"
+
+
+async def test_item_level_failure_is_counted_and_siblings_staged(tmp_path):
+    from tidal_sync.engine.importer import import_tracks_category_async
+
+    csv = tmp_path / "Songs.csv"
+    csv.write_text(
+        "track_name,artist_name,album_name,isrc,tidal_id\n"
+        "Keep1,Artist,Album,ISRC1,1\n"
+        "Drop,Artist,Album,ISRC2,2\n"
+        "Keep2,Artist,Album,ISRC3,3\n",
+        encoding="utf-8",
+    )
+
+    import tidal_sync.engine.importer as imp
+
+    real_resolve = imp.resolve_track_to_id
+
+    async def failing_resolve(session, track_name, artist_name, tidal_id=None, isrc=None):
+        if track_name == "Drop":
+            raise TidalTransientError("transient failure persisted")
+        return await real_resolve(
+            session,
+            track_name=track_name,
+            artist_name=artist_name,
+            tidal_id=tidal_id,
+            isrc=isrc,
+        )
+
+    imp.resolve_track_to_id = failing_resolve
+    try:
+        session = TrackMatchingSession("Drop")
+        stats = ImportStats()
+        await import_tracks_category_async(session, csv, stats, playlist_name="Songs")
+    finally:
+        imp.resolve_track_to_id = real_resolve
+
+    assert stats.failed == 1, "the item-level failure is counted"
+    assert sorted(session.user.playlist.added) == ["1", "3"], (
+        "the surviving tracks are staged and uploaded"
+    )
+
+
+async def test_abuse_lock_aborts_the_run(tmp_path):
+    from tidal_sync.engine.importer import import_tracks_category_async
+
+    csv = tmp_path / "Songs.csv"
+    csv.write_text(
+        "track_name,artist_name,album_name,isrc,tidal_id\n"
+        "Keep1,Artist,Album,ISRC1,1\n"
+        "Drop,Artist,Album,ISRC2,2\n"
+        "Keep2,Artist,Album,ISRC3,3\n",
+        encoding="utf-8",
+    )
+
+    import tidal_sync.engine.importer as imp
+
+    real_resolve = imp.resolve_track_to_id
+
+    async def rate_limited_resolve(session, track_name, artist_name, tidal_id=None, isrc=None):
+        if track_name == "Drop":
+            raise TidalRateLimitError("Rate limit persisted after 5 attempts")
+        return await real_resolve(
+            session,
+            track_name=track_name,
+            artist_name=artist_name,
+            tidal_id=tidal_id,
+            isrc=isrc,
+        )
+
+    imp.resolve_track_to_id = rate_limited_resolve
+    try:
+        session = TrackMatchingSession("Drop")
+        stats = ImportStats()
+        with pytest.raises(ExceptionGroup) as excinfo:
+            await import_tracks_category_async(session, csv, stats, playlist_name="Songs")
+        assert excinfo.group_contains(TidalRateLimitError), (
+            "the abuse lock must abort the run, not be counted as a miss"
+        )
+    finally:
+        imp.resolve_track_to_id = real_resolve
+
+    assert stats.failed == 0, "an abuse lock is not a per-track miss"

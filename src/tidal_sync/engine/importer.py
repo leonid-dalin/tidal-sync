@@ -17,6 +17,7 @@ from loguru import logger
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
+from ..domain.exceptions import TidalTransientError
 from ..domain.models import AlbumRow, ArtistRow, TrackRow
 from ..domain.protocols import TidalUser
 from .folders import assign_playlist_to_v2_folder, ensure_v2_folder_exists
@@ -276,10 +277,12 @@ async def import_tracks_category_async(
                 tidal_id=str(track.tidal_id) if track.tidal_id else None,
                 isrc=str(track.isrc) if track.isrc else None,
             )
-        except Exception as e:
+        except TidalTransientError as e:
             # execute_network raises once its retry budget is spent; an
             # unhandled exception here cancels every sibling task in the
             # TaskGroup, so one flaky match must not sink the whole run.
+            # TidalPoisonError is never raised on the resolve path: a bad
+            # track returns no search results and is counted by decide().
             await stats.add_failed()
             logger.bind(audit=True).error(
                 "Track match failed", track=track.track_name, error=repr(e)

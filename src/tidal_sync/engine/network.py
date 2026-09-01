@@ -34,19 +34,26 @@ class GlobalTidalGate:
     async def pre_flight_check(self):
         """Forces workers to pause if a sibling thread triggered a backoff"""
         async with self.lock:
-            now = time.time()
-            if now < self.backoff_until:
-                remaining = self.backoff_until - now
-                logger.warning(f"Global Gate active. Sleeping for {remaining:.1f}s")
-                await asyncio.sleep(remaining)
+            remaining = max(0.0, self.backoff_until - time.monotonic())
+
+        # Sleeping outside the lock is deliberate: holding it across the sleep
+        # blocks trigger_backoff for the whole window, so a second throttle
+        # signal cannot extend the window while any worker is asleep.
+        if remaining:
+            logger.warning("Global Gate active. Sleeping for {remaining:.1f}s", remaining=remaining)
+            await asyncio.sleep(remaining)
 
     async def trigger_backoff(self, seconds: float, reason: str = "Rate Limit 429") -> None:
         """Called by a worker that gets a 429 or 403"""
         async with self.lock:
-            new_time = time.time() + seconds
+            new_time = time.monotonic() + seconds
             if new_time > self.backoff_until:  # only extend, never shorten
                 self.backoff_until = new_time
-                logger.error(f"Engaging global throttle for {seconds}s: {reason}")
+                logger.error(
+                    "Engaging global throttle for {seconds}s: {reason}",
+                    seconds=seconds,
+                    reason=reason,
+                )
 
 
 GLOBAL_GATE = GlobalTidalGate()

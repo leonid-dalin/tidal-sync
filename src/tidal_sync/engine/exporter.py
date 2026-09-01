@@ -1,3 +1,20 @@
+# tidal-sync: A high-performance tool for backing up and cloning Tidal libraries.
+# Copyright (C) 2026 Leonid Dalin
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, version 3 or later of the License.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# Contact: infoLeonid@protonMail.com
+
 """
 Data extraction and local backup engine.
 
@@ -8,31 +25,36 @@ the user's cloud-based folder hierarchy on their local filesystem.
 """
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast, Callable
+from typing import Any, cast
+
 import tidalapi
 from loguru import logger
 from rich.console import Console
 
 from ..domain.protocols import TidalUser
+from .folders import build_playlist_folder_map
 from .network import execute_network, fetch_all_async, fetch_blocked_artists
 from .parser import (
+    UniquePathAllocator,
+    normalises_playlist_id,
     write_albums_csv_sync,
     write_artists_csv_sync,
     write_tracks_csv_sync,
-    sanitize_filename,
-    normalises_playlist_id
 )
+from .workers import run_headless_tasks_async
 
 console = Console()
 
 
 async def fetch_and_serialise_tracks(
-        name: str,
-        target_dir: Path,
-        fetch_items_coro: Any,
-        log_type: str
-) -> None:
+    name: str,
+    target_dir: Path,
+    fetch_items_coro: Any,
+    log_type: str,
+    allocator: "UniquePathAllocator",
+) -> int:
     """
     Retrieves track metadata from the network and offloads file writing to the disk.
 
@@ -41,123 +63,26 @@ async def fetch_and_serialise_tracks(
     thread, preventing the async event loop from freezing during large backups.
 
     Args:
-        name (str): The raw name of the playlist or collection.
-        target_dir (Path): The destination directory on the local filesystem.
-        fetch_items_coro (Any): The API endpoint or coroutine to retrieve the tracks.
-        log_type (str): The category used for telemetry (e.g., 'Playlist', 'Mix').
-    """
-    try:
-        tracks = await fetch_all_async(fetch_items_coro)
-        if not tracks:
-            return
-
-        safe_name = sanitize_filename(name)
-        file_path = target_dir / f"{safe_name}.csv"
-
-        await asyncio.to_thread(write_tracks_csv_sync, file_path, tracks)
-        logger.bind(audit=True).debug("Snapshot Saved", type=log_type, name=name)
-
-    except Exception as e:
-        logger.error(f"Failed to export {log_type} '{name}'", error=str(e))
-
-
-async def build_playlist_folder_map(session: tidalapi.Session) -> dict[str, str]:
-    """
-    Reconstructs the user's visual folder tree from Tidal's flat backend structure.
-
-    Tidal's V2 API separates folders from playlists. This function queries
-    the flattened folder list and maps each contained playlist UUID to its
-    sanitised parent folder name, allowing the exporter to recreate the exact
-    directory structure on the user's hard drive.
-
-    Args:
-        session (tidalapi.Session): The active, authenticated Tidal session.
-
+        name (str): Human-readable label for the collection being exported,
+            used in log lines.
+        target_dir (Path): Directory the serialised JSONL files are written to.
+        fetch_items_coro (Awaitable[list[Any]]): Coroutine that returns the
+            track items to serialise.
+        log_type (str): Tag recorded in the telemetry line for this export.
+        allocator (UniquePathAllocator): Hands out non-colliding paths for
+            this export run. Two collections sharing a name must not open
+            the same file.
     Returns:
-        dict[str, str]: A dictionary mapping normalised playlist UUIDs to folder names.
+        int: The number of rows written.
     """
-    playlist_folder_map = {}
-    base_params = {
-        "deviceType": "BROWSER",
-        "order": "DATE",
-        "orderDirection": "DESC",
-        "locale": "en_US",
-        "limit": 50
-    }
+    tracks = await fetch_all_async(fetch_items_coro)
+    if not tracks:
+        return 0
 
-    try:
-        folders = []
-        offset = 0
-        while True:
-            folder_params = base_params.copy()
-            folder_params.update({"includeOnly": "FOLDER", "offset": offset})
-
-            folder_res = await execute_network(
-                session.request.request, "GET", "my-collection/playlists/folders/flattened",
-                params=folder_params, base_url=session.config.api_v2_location
-            )
-
-            if not folder_res.ok:
-                break
-
-            items = folder_res.json().get("items", [])
-            if not items:
-                break
-
-            folders.extend(items)
-            offset += len(items)
-
-            if len(items) < 50:
-                break
-
-        for folder_item in folders:
-            data = folder_item.get("data", {})
-            folder_id = data.get("id") or data.get("uuid") or folder_item.get("id")
-            folder_name = data.get("name") or data.get("title") or folder_item.get("name")
-
-            if not folder_id or not folder_name:
-                continue
-
-            safe_folder_name = sanitize_filename(folder_name)
-            c_offset = 0
-
-            while True:
-                content_params = base_params.copy()
-                content_params.update({"folderId": folder_id, "offset": c_offset})
-
-                content_res = await execute_network(
-                    session.request.request, "GET", "my-collection/playlists/folders",
-                    params=content_params, base_url=session.config.api_v2_location
-                )
-
-                if not content_res.ok:
-                    break
-
-                items = content_res.json().get("items", [])
-                if not items:
-                    break
-
-                for item in items:
-                    item_data = item.get("data", {})
-                    pl_uuid = item_data.get("uuid") or item_data.get("id")
-
-                    if not pl_uuid and "playlist" in item and isinstance(item["playlist"], dict):
-                        pl_uuid = item["playlist"].get("uuid") or item["playlist"].get("id")
-                    if not pl_uuid:
-                        pl_uuid = item.get("id") or item.get("uuid")
-
-                    if pl_uuid:
-                        normalized_uuid = normalises_playlist_id(pl_uuid)
-                        playlist_folder_map[normalized_uuid] = safe_folder_name
-
-                c_offset += len(items)
-                if len(items) < 50:
-                    break
-
-    except Exception as e:
-        logger.warning(f"Could not construct folder map from V2 API: {e}")
-
-    return playlist_folder_map
+    file_path = allocator.allocate(target_dir, name)
+    rows = await asyncio.to_thread(write_tracks_csv_sync, file_path, tracks)
+    logger.bind(audit=True).debug("Snapshot Saved", type=log_type, name=name, rows=rows)
+    return rows
 
 
 async def export_user_favourites_to_disk(session: tidalapi.Session, base_dir: Path) -> None:
@@ -172,7 +97,7 @@ async def export_user_favourites_to_disk(session: tidalapi.Session, base_dir: Pa
         base_dir (Path): The root output directory for the backup.
     """
     user = cast(TidalUser, cast(object, session.user))
-    if not hasattr(user, 'favorites'):
+    if not hasattr(user, "favorites"):
         return
 
     async def _export_songs():
@@ -231,7 +156,11 @@ async def export_user_playlists_to_disk(session: tidalapi.Session, base_dir: Pat
         base_dir (Path): The root output directory for the backup.
     """
     try:
-        playlists = await fetch_all_async(session.user.playlists)
+        user = cast(TidalUser, cast(object, session.user))
+        if user is None:
+            logger.error("No authenticated user on the session; cannot export playlists")
+            return
+        playlists = await fetch_all_async(user.playlists)
 
         # Deduplicate V1 playlists (Tidal API yields folder contents twice)
         unique_playlists = {}
@@ -243,19 +172,36 @@ async def export_user_playlists_to_disk(session: tidalapi.Session, base_dir: Pat
         folder_map = await build_playlist_folder_map(session)
         console.print(f"[cyan]Exporting {len(playlists)} Playlists...[/cyan]")
 
-        async with asyncio.TaskGroup() as tg:
-            for pl in playlists:
-                normalized_pl_id = normalises_playlist_id(pl.id)
-                folder_name = folder_map.get(normalized_pl_id)
+        allocator = UniquePathAllocator()
+        exported = 0
+        failures: list[str] = []
 
-                if folder_name:
-                    target_dir = base_dir / "Playlists" / folder_name
-                else:
-                    target_dir = base_dir / "Playlists"
+        async def _export_one(pl: Any) -> None:
+            nonlocal exported
+            normalized_pl_id = normalises_playlist_id(pl.id)
+            folder_name = folder_map.get(normalized_pl_id)
 
-                tg.create_task(
-                    fetch_and_serialise_tracks(pl.name, target_dir, pl.tracks, "Playlist")
+            if folder_name:
+                target_dir = base_dir / "Playlists" / folder_name
+            else:
+                target_dir = base_dir / "Playlists"
+
+            try:
+                exported += await fetch_and_serialise_tracks(
+                    pl.name, target_dir, pl.tracks, "Playlist", allocator
                 )
+            except Exception as e:
+                # TaskGroup cancels every sibling on the first unhandled
+                # exception, so one bad playlist must not escape here.
+                failures.append(f"{pl.name}: {e}")
+                logger.error("Export failed for {name}", name=pl.name, error=repr(e))
+
+        await run_headless_tasks_async(playlists, _export_one)
+
+        if failures:
+            console.print(f"\n[bold red]{len(failures)} playlist(s) failed:[/bold red]")
+            for detail in failures[:20]:
+                console.print(f"  [dim]{detail}[/dim]")
     except Exception as e:
         logger.error("Failed to export playlists", error=str(e))
 
@@ -279,59 +225,97 @@ async def export_algorithmic_mixes_to_disk(session: tidalapi.Session, base_dir: 
     try:
         all_stations = []
 
-        if hasattr(user, 'favorites'):
-            if hasattr(user.favorites, 'mixes'):
+        if hasattr(user, "favorites"):
+            if hasattr(user.favorites, "mixes"):
                 mixes_func = user.favorites.mixes
                 mixes = await execute_network(mixes_func) if callable(mixes_func) else mixes_func
-                if isinstance(mixes, list): all_stations.extend(mixes)
+                if isinstance(mixes, list):
+                    all_stations.extend(mixes)
 
-            if hasattr(user.favorites, 'radios'):
+            if hasattr(user.favorites, "radios"):
                 radios_func = user.favorites.radios
-                radios = await execute_network(radios_func) if callable(radios_func) else radios_func
-                if isinstance(radios, list): all_stations.extend(radios)
+                radios = (
+                    await execute_network(radios_func) if callable(radios_func) else radios_func
+                )
+                if isinstance(radios, list):
+                    all_stations.extend(radios)
 
-        if not all_stations and hasattr(session, 'mixes'):
+        if not all_stations and hasattr(session, "mixes"):
             mixes_func = session.mixes
             mixes = await execute_network(mixes_func) if callable(mixes_func) else mixes_func
-            if isinstance(mixes, list): all_stations.extend(mixes)
+            if isinstance(mixes, list):
+                all_stations.extend(mixes)
 
         if not all_stations:
             return
 
         console.print(f"[cyan]Snapshotting {len(all_stations)} Mixes & Radios...[/cyan]")
 
-        async with asyncio.TaskGroup() as tg:
-            for station in all_stations:
-                station_name = getattr(station, 'title',
-                                       getattr(station, 'name', getattr(station, 'id', 'Unknown Station')))
-                fetch_target = None
+        allocator = UniquePathAllocator()
+        failures: list[str] = []
 
-                for attr in ('get_items', 'get_tracks', 'items', 'tracks'):
-                    if hasattr(station, attr):
-                        fetch_target = getattr(station, attr)
-                        break
+        async def _export_station(station: Any) -> None:
+            station_name = next(
+                (
+                    getattr(station, attr)
+                    for attr in ("title", "name", "id")
+                    if hasattr(station, attr)
+                ),
+                "Unknown Station",
+            )
+            fetch_target = None
 
-                if fetch_target is None and type(station).__name__ == "MixV2":
-                    def _get_v2_items(st=station):
-                        if not getattr(st, '_retrieved', False): st.get()
-                        return getattr(st, '_items', []) or []
+            for attr in ("get_items", "get_tracks", "items", "tracks"):
+                if hasattr(station, attr):
+                    fetch_target = getattr(station, attr)
+                    break
 
-                    fetch_target = _get_v2_items
+            if fetch_target is None and type(station).__name__ == "MixV2":
 
-                if fetch_target is not None:
-                    if isinstance(fetch_target, list):
-                        def _wrap_list(items: list[Any]) -> Callable[..., list[Any]]:
-                            return lambda **kwargs: items
+                def _get_v2_items(st=station):
+                    try:
+                        if not getattr(st, "_retrieved", False):
+                            st.get()
+                        return getattr(st, "_items", []) or []
+                    except AttributeError:
+                        # tidalapi stopped exposing these private attributes;
+                        # skip rather than crash the whole export.
+                        logger.debug(
+                            "MixV2 station {name} missing private state", name=station_name
+                        )
+                        return []
 
-                        safe_fetch = _wrap_list(fetch_target)
-                    else:
-                        safe_fetch = fetch_target
+                fetch_target = _get_v2_items
 
-                    tg.create_task(
-                        fetch_and_serialise_tracks(str(station_name), target_dir, safe_fetch, "Mix/Radio")
-                    )
-                else:
-                    logger.warning(f"Station '{station_name}' has no track parsing function available.")
+            if fetch_target is None:
+                logger.warning(f"Station '{station_name}' has no track parsing function available.")
+                return
+
+            if isinstance(fetch_target, list):
+
+                def _wrap_list(items: list[Any]) -> Callable[..., list[Any]]:
+                    return lambda **kwargs: items
+
+                safe_fetch = _wrap_list(fetch_target)
+            else:
+                safe_fetch = fetch_target
+
+            try:
+                await fetch_and_serialise_tracks(
+                    str(station_name), target_dir, safe_fetch, "Mix/Radio", allocator
+                )
+            except Exception as e:
+                # TaskGroup cancels every sibling on the first unhandled
+                # exception, so one bad station must not escape here.
+                failures.append(f"{station_name}: {e}")
+                logger.error("Export failed for {name}", name=station_name, error=repr(e))
+
+        await run_headless_tasks_async(all_stations, _export_station)
+
+        if failures:
+            console.print(f"\n[bold red]{len(failures)} mix(es)/radio(s) failed:[/bold red]")
+            for detail in failures[:20]:
+                console.print(f"  [dim]{detail}[/dim]")
 
     except Exception as e:
         logger.error("Failed to fetch algorithmic stations", error=str(e))

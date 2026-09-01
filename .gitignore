@@ -24,3 +24,10 @@ uv.lock
 .idea/
 .vscode/
 *.swp
+
+# --- Planning ---
+# Internal agent/process docs. Never committed to the public repo.
+private/
+.superpowers/
+docs/superpowers/
+my_tidal_backup/

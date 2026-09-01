@@ -1,0 +1,14 @@
+# Normalise line endings so commits stop churning between LF and CRLF.
+* text=auto eol=lf
+
+*.py    text
+*.md    text
+*.toml  text
+*.yml   text
+*.yaml  text
+*.csv   text
+*.json  text
+*.jsonl text
+
+# Keep the AGPL licence file out of language statistics.
+LICENSE linguist-detectable=false

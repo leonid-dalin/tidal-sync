@@ -28,34 +28,40 @@ Example:
 """
 
 import asyncio
-import typer
 from pathlib import Path
 from typing import Annotated
+
+import typer
 from rich.console import Console
-from loguru import logger
 
-from .domain.logger import setup_global_logging
+from .auth import _get_all_profiles, get_session, secure_delete_token
 from .domain.enums import ClearTarget
-from .domain.exceptions import TidalAuthenticationError
-from .auth import get_session, secure_delete_token, _get_all_profiles
-
-from .engine.importer import import_collection_from_disk
+from .domain.exceptions import TidalAuthenticationError, TidalSyncError
 from .engine.exporter import (
-    export_user_playlists_to_disk,
+    export_algorithmic_mixes_to_disk,
     export_user_favourites_to_disk,
-    export_algorithmic_mixes_to_disk
+    export_user_playlists_to_disk,
 )
+from .engine.importer import import_collection_from_disk
 from .engine.wiping import purge_target_category_async
+from .infrastructure.logger import (
+    setup_audit_logging,
+    setup_global_logging,
+    stop_audit_logging,
+)
 
-
-app = typer.Typer(help="Modern CLI for managing, importing, exporting, and cloning Tidal libraries.")
+app = typer.Typer(
+    help="Modern CLI for managing, importing, exporting, and cloning Tidal libraries."
+)
 console = Console()
 setup_global_logging()
 
 
 @app.command()
 def login(
-    profile: Annotated[str, typer.Option("--profile", "-p", help="Profile name for dual-account management")] = "default"
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Profile name for dual-account management")
+    ] = "default",
 ) -> None:
     """
     Authenticates a Tidal account and saves it to a local profile.
@@ -70,12 +76,14 @@ def login(
         get_session(profile)
     except TidalAuthenticationError as e:
         console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
 def logout(
-    profile: Annotated[str, typer.Option("--profile", "-p", help="Profile name to wipe")] = "default"
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Profile name to wipe")
+    ] = "default",
 ) -> None:
     """
     Securely logs out and wipes session credentials for a specific profile.
@@ -83,14 +91,19 @@ def logout(
     Args:
         profile (str): The name of the profile to wipe. Defaults to 'default'.
     """
-    secure_delete_token(profile)
+    if not secure_delete_token(profile):
+        raise typer.Exit(1)
 
 
 @app.command(name="import")
 def import_data(
-    target_path: Annotated[Path, typer.Argument(help="Path to a CSV file OR a directory", exists=True)],
+    target_path: Annotated[
+        Path, typer.Argument(help="Path to a CSV file OR a directory", exists=True)
+    ],
     name: Annotated[str | None, typer.Option("--name", "-n", help="Target playlist name")] = None,
-    profile: Annotated[str, typer.Option("--profile", "-p", help="Which account profile to import into")] = "default"
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to import into")
+    ] = "default",
 ) -> None:
     """
     Ingests CSV metadata and synchronises it with a Tidal account.
@@ -106,15 +119,29 @@ def import_data(
     """
     try:
         session = get_session(profile)
-        asyncio.run(import_collection_from_disk(session, target_path, target_playlist_name=name))
-    finally:
-        logger.remove()  # Safely flushes the enqueue=True background threads before the CLI exits
+        setup_audit_logging(Path("./import_reports"))
+        try:
+            asyncio.run(
+                import_collection_from_disk(session, target_path, target_playlist_name=name)
+            )
+        finally:
+            stop_audit_logging()
+    except TidalAuthenticationError as e:
+        console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+        raise typer.Exit(1) from e
+    except TidalSyncError as e:
+        console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
+        raise typer.Exit(1) from e
 
 
 @app.command(name="export")
 def export_all(
-    output_dir: Annotated[Path, typer.Option("--out", "-o", help="Output directory")] = Path("./exports"),
-    profile: Annotated[str, typer.Option("--profile", "-p", help="Which account profile to export from")] = "default"
+    output_dir: Annotated[Path, typer.Option("--out", "-o", help="Output directory")] = Path(
+        "./exports"
+    ),
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to export from")
+    ] = "default",
 ) -> None:
     """
     Backs up the entire Tidal library to local CSV files.
@@ -126,7 +153,6 @@ def export_all(
         output_dir (Path): The directory where the backup will be stored.
         profile (str): The authentication profile to export from.
     """
-    session = get_session(profile)
 
     async def run_exports():
         async with asyncio.TaskGroup() as tg:
@@ -134,38 +160,78 @@ def export_all(
             tg.create_task(export_user_favourites_to_disk(session, output_dir))
             tg.create_task(export_algorithmic_mixes_to_disk(session, output_dir))
 
-    asyncio.run(run_exports())
+    try:
+        session = get_session(profile)
+        setup_audit_logging(output_dir / "reports")
+        asyncio.run(run_exports())
+    except TidalAuthenticationError as e:
+        console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+        raise typer.Exit(1) from e
+    except TidalSyncError as e:
+        console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
+        raise typer.Exit(1) from e
+    finally:
+        stop_audit_logging()
 
 
 @app.command()
 def clear(
     target: Annotated[ClearTarget, typer.Argument(help="What to clear")],
-    profile: Annotated[str, typer.Option("--profile", "-p", help="Which account profile to clear")] = "default",
-    force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt")] = False
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to clear")
+    ] = "default",
+    force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt")] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Report counts without deleting")
+    ] = False,
 ) -> None:
     """
-    Destructively removes a specific category of data from a Tidal account.
+    Destructively removes a category of data from a Tidal account.
 
-    Provides a manual confirmation prompt unless the `--force` flag is used.
     This action is irreversible.
-
-    Args:
-        target (ClearTarget): The category to wipe (e.g., 'all', 'tracks').
-        profile (str): The authentication profile to clear.
-        force (bool): Skips the manual safety confirmation. Defaults to False.
     """
-    if not force:
-        typer.confirm(
-            f"Are you absolutely sure you want to permanently delete {target} from the '{profile}' profile?",
-            abort=True
-        )
-
+    # Authenticate first so the prompt can name the account being destroyed.
     try:
         session = get_session(profile)
-        asyncio.run(purge_target_category_async(session, target))
     except TidalAuthenticationError as e:
         console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+        raise typer.Exit(1) from e
+    except TidalSyncError as e:
+        console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
+        raise typer.Exit(1) from e
+
+    user_id = getattr(getattr(session, "user", None), "id", "unknown")
+    console.print(
+        f"[bold red]About to permanently delete {target} from Tidal account "
+        f"{user_id} (profile '{profile}').[/bold red]"
+    )
+
+    setup_audit_logging(Path("./import_reports"))
+    try:
+        if not force and not dry_run:
+            typed = typer.prompt(f"Type '{profile}' to confirm irreversible deletion of {target}")
+            if typed != profile:
+                console.print("[red]Confirmation did not match. Aborting.[/red]")
+                raise typer.Abort()
+
+        report = asyncio.run(purge_target_category_async(session, target, dry_run=dry_run))
+    finally:
+        stop_audit_logging()
+
+    if dry_run:
+        console.print(f"[yellow]Dry run: would attempt {report.requested} deletions.[/yellow]")
+        return
+
+    console.print(f"  Deleted: {report.deleted}")
+    if report.failed:
+        console.print(f"  [red]Failed: {report.failed}[/red]")
+        for detail in report.failures[:10]:
+            console.print(f"    [dim]{detail}[/dim]")
         raise typer.Exit(1)
+
+    console.print(
+        f"[bold green]Successfully cleared '{target.value}' ({report.deleted} items).[/bold green]"
+    )
 
 
 @app.command(name="profiles")
@@ -183,6 +249,7 @@ def list_profiles() -> None:
     for profile_name, user_id in profiles.items():
         console.print(f"  • [bold green]{profile_name}[/bold green] (User ID: {user_id})")
     console.print("")
+
 
 if __name__ == "__main__":
     app()

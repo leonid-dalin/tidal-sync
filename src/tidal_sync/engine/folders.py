@@ -1,182 +1,235 @@
-"""
-Tidal V2 API folder management and HTTP bypasses.
+# tidal-sync: A high-performance tool for backing up and cloning Tidal libraries.
+# Copyright (C) 2026 Leonid Dalin
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, version 3 or later of the License.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# Contact: infoLeonid@protonMail.com
 
-This module provides raw HTTP interventions to manage playlist folders.
-It intentionally bypasses the standard `tidalapi` wrapper to prevent
-JSON decoding errors triggered by Tidal's undocumented V2 API, which
-frequently returns empty HTTP response bodies upon success.
+"""
+V2 playlist folder access.
+
+Tidal's V2 API manages folders separately from playlists, and tidalapi does
+not expose them, so this module owns the raw endpoints. Every call goes
+through execute_network so folder traffic obeys the global rate-limit gate.
+
+The folder endpoints are undocumented and were reverse-engineered from the
+web player. The requests below are reproduced exactly from the calls that
+worked: verb, path, parameters, and the empty body Tidal's firewall
+requires. Changing any of them breaks folder management against a real
+account, which no unit test can detect.
 """
 
-import asyncio
-import requests
-from typing import Any
-from loguru import logger
+from typing import Any, Literal
+
 import tidalapi
-from rich.console import Console
+from loguru import logger
 
-from .parser import normalises_playlist_id
+from .network import execute_network, paginate
+from .parser import normalises_playlist_id, sanitize_filename
 
-console = Console()
+_V2_PATH = "my-collection/playlists/folders"
+_PAGE_SIZE = 50
+_V2_METHOD = Literal["GET", "PUT", "POST", "DELETE"]
 
-# Module-level cache to minimise redundant API calls during batch processing
-_v2_folder_cache: dict[str, str] = {}
+
+def _base_params(session: tidalapi.Session) -> dict[str, Any]:
+    params: dict[str, Any] = {"deviceType": "BROWSER", "locale": "en_US"}
+    country_code = getattr(session, "country_code", None)
+    if country_code:
+        params["countryCode"] = country_code
+    return params
 
 
-async def ensure_v2_folder_exists(session: tidalapi.Session, folder_name: str) -> str | None:
+def _v2(
+    session: tidalapi.Session, method: _V2_METHOD, path: str, data: Any = None, **params: Any
+) -> Any:
+    """Issues one V2 request. The only place a V2 call is constructed."""
+    request_params = {**_base_params(session), **params}
+    return session.request.request(
+        method,
+        path,
+        params=request_params,
+        data=data,
+        base_url=session.config.api_v2_location,
+    )
+
+
+async def fetch_v2_folders(session: tidalapi.Session) -> list[tuple[str, str]]:
+    """Lists every V2 folder as (id, name) pairs.
+
+    Stops on an empty page, a short page, or a page that repeats ids already
+    seen. Without that last guard an endpoint that ignores `offset` would loop
+    forever issuing calls into the gate.
     """
-    Idempotently resolves a folder UUID by its name, creating it if it does not already exist.
 
-    This function relies on raw `requests` calls offloaded to the asyncio thread pool.
-    By doing so, we prevent the core `tidalapi` library from crashing when Tidal
-    returns a successful 200 OK with no body data, or when it misinterprets base URL overrides.
+    def key(item: dict[str, Any]) -> str:
+        return str(item.get("data", {}).get("uuid") or item.get("uuid") or "")
 
-    Args:
-        session (tidalapi.Session): The active, authenticated Tidal session.
-        folder_name (str): The exact string name of the target folder to find or create.
+    async def fetch_page(offset: int, limit: int) -> list[dict[str, Any]]:
+        res = await execute_network(
+            _v2,
+            session,
+            "GET",
+            f"{_V2_PATH}/flattened",
+            includeOnly="FOLDER",
+            offset=offset,
+            limit=limit,
+        )
+        return res.json().get("items", [])
 
-    Returns:
-        str | None: The UUID of the folder, or None if the creation request failed.
-    """
-    if folder_name in _v2_folder_cache:
-        return _v2_folder_cache[folder_name]
+    raw = await paginate(fetch_page, page_size=_PAGE_SIZE, key=key, stop_on_short_page=True)
 
-    base_params: dict[str, Any] = {"deviceType": "BROWSER", "locale": "en_US"}
-    if hasattr(session, "country_code") and session.country_code:
-        base_params["countryCode"] = session.country_code
+    folders: list[tuple[str, str]] = []
+    for item in raw:
+        data = item.get("data", {})
+        folder_id = data.get("id") or data.get("uuid") or item.get("id")
+        folder_name = data.get("name") or data.get("title") or item.get("name")
+        if folder_id and folder_name:
+            folders.append((str(folder_id), str(folder_name)))
+    return folders
 
-    base_v2_url = "https://api.tidal.com/v2"
 
-    headers = {
-        "Authorization": f"Bearer {session.access_token}",
-        "Accept": "application/json"
-    }
+async def fetch_folder_playlists(session: tidalapi.Session, folder_id: str) -> list[str]:
+    """Lists the playlist UUIDs directly inside a folder."""
 
-    # 1. Check if the folder already exists (Raw Requests Bypass)
-    offset = 0
-    while True:
-        params = base_params.copy()
-        params.update({"includeOnly": "FOLDER", "offset": offset, "limit": 50})
-        try:
-            def _fetch_folders():
-                return requests.get(
-                    f"{base_v2_url}/my-collection/playlists/folders/flattened",
-                    params=params,
-                    headers=headers
-                )
+    def key(item: dict[str, Any]) -> str:
+        return str(item.get("id") or item.get("uuid") or "")
 
-            res = await asyncio.to_thread(_fetch_folders)
+    async def fetch_page(offset: int, limit: int) -> list[dict[str, Any]]:
+        res = await execute_network(
+            _v2,
+            session,
+            "GET",
+            _V2_PATH,
+            folderId=folder_id,
+            offset=offset,
+            limit=limit,
+        )
+        return res.json().get("items", [])
 
-            if not res.ok:
-                logger.debug(f"Failed to fetch existing folders. HTTP {res.status_code}")
-                break
+    raw = await paginate(fetch_page, page_size=_PAGE_SIZE, key=key, stop_on_short_page=True)
 
-            data_payload = res.json()
-            items = data_payload.get("items", [])
+    uuids: list[str] = []
+    for item in raw:
+        data = item.get("data", {})
+        pl_uuid = data.get("uuid") or data.get("id")
+        if not pl_uuid and isinstance(item.get("playlist"), dict):
+            pl_uuid = item["playlist"].get("uuid") or item["playlist"].get("id")
+        if not pl_uuid:
+            pl_uuid = item.get("id") or item.get("uuid")
+        if pl_uuid:
+            uuids.append(str(pl_uuid))
+    return uuids
 
-            if not items:
-                break
 
-            for item in items:
-                data = item.get("data", {})
-                name = data.get("name") or data.get("title") or item.get("name")
-                raw_id = data.get("uuid") or data.get("id") or item.get("uuid")
-
-                if name == folder_name and raw_id:
-                    f_id = str(raw_id)
-                    _v2_folder_cache[folder_name] = f_id
-                    return f_id
-
-            offset += len(items)
-            if len(items) < 50:
-                break
-
-        except Exception as e:
-            logger.debug(f"Exception during existing folder fetch: {e}")
-            break
-
-    # 2. Create a new folder mimicking the Web Player's behaviour
-    create_params = base_params.copy()
-    create_params.update({
-        "folderId": "root",
-        "name": folder_name,
-        "trns": ""
-    })
-
+async def build_playlist_folder_map(session: tidalapi.Session) -> dict[str, str]:
+    """Maps normalised playlist UUID -> sanitised parent folder name."""
+    folder_map: dict[str, str] = {}
     try:
-        def _execute_create():
-            return requests.put(
-                f"{base_v2_url}/my-collection/playlists/folders/create-folder",
-                params=create_params,
-                headers=headers
-            )
-
-        res = await asyncio.to_thread(_execute_create)
-
-        if res.ok:
-            data_payload = res.json()
-            raw_id = data_payload.get("data", {}).get("id") or data_payload.get("id")
-
-            if raw_id:
-                f_id = str(raw_id)
-                _v2_folder_cache[folder_name] = f_id
-                console.print(f"[green]✓ Created Folder:[/green] {folder_name}")
-                return f_id
-        else:
-            logger.warning(f"Folder creation failed. HTTP {res.status_code}: {res.text}")
-
+        for folder_id, folder_name in await fetch_v2_folders(session):
+            safe_name = sanitize_filename(folder_name)
+            for pl_uuid in await fetch_folder_playlists(session, folder_id):
+                folder_map[normalises_playlist_id(pl_uuid)] = safe_name
     except Exception as e:
-        logger.warning(f"Failed to create folder '{folder_name}': {e}")
+        logger.warning("Could not construct folder map from V2 API: {error}", error=repr(e))
 
-    return None
+    return folder_map
 
 
-async def assign_playlist_to_v2_folder(session: tidalapi.Session, playlist_id: str, folder_id: str) -> None:
+async def create_folder(session: tidalapi.Session, name: str) -> str | None:
+    """Creates a V2 folder and returns its id, or None on failure.
+
+    Reproduces the web player's call: PUT to create-folder with folderId=root
+    and an empty trns.
     """
-    Moves a specified playlist into a designated V2 folder directory.
-
-    This function strictly emulates the Web Player's request headers. It explicitly
-    declares a Content-Length of 0 with an empty byte payload to bypass Tidal's
-    internal firewalls, which would otherwise reject the raw PUT request.
-
-    Args:
-        session (tidalapi.Session): The active, authenticated Tidal session.
-        playlist_id (str): The standard UUID or URN-prefixed ID of the playlist.
-        folder_id (str): The destination folder's UUID.
-    """
-    normalized_uuid = normalises_playlist_id(playlist_id)
-    trn_playlist = f"trn:playlist:{normalized_uuid}"
-
-    params = {
-        "folderId": folder_id,
-        "trns": trn_playlist,
-        "deviceType": "BROWSER",
-        "locale": "en_US"
-    }
-
-    if hasattr(session, "country_code") and session.country_code:
-        params["countryCode"] = session.country_code
-
-    headers = {
-        "Authorization": f"Bearer {session.access_token}",
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-
     try:
-        def _execute_move():
-            return requests.put(
-                "https://api.tidal.com/v2/my-collection/playlists/folders/move",
-                params=params,
-                headers=headers,
-                data=b''
-            )
-
-        res = await asyncio.to_thread(_execute_move)
-
-        if not res.ok:
-            logger.warning(f"Folder assignment failed. HTTP {res.status_code}: {res.text}")
-        else:
-            logger.debug(f"Successfully moved playlist {playlist_id} into folder {folder_id}")
-
+        res = await execute_network(
+            _v2,
+            session,
+            "PUT",
+            f"{_V2_PATH}/create-folder",
+            folderId="root",
+            name=name,
+            trns="",
+        )
+        # tidalapi's request() raises on any non-2xx, so a returned response is
+        # always ok. There is no success flag to check.
+        payload = res.json()
+        if not payload:
+            return None
+        data = payload.get("data", payload)
+        return str(data.get("uuid") or data.get("id") or "") or None
     except Exception as e:
-        logger.warning(f"Failed to move playlist to folder: {e}")
+        logger.warning("Folder creation failed: {error}", error=repr(e))
+        return None
+
+
+async def assign_playlist(session: tidalapi.Session, playlist_id: str, folder_id: str) -> bool:
+    """Moves a playlist into a folder. Returns True on success.
+
+    The empty body forces Content-Length: 0, which Tidal's firewall requires.
+    """
+    trn = f"trn:playlist:{normalises_playlist_id(playlist_id)}"
+    try:
+        await execute_network(
+            _v2,
+            session,
+            "PUT",
+            f"{_V2_PATH}/move",
+            data=b"",
+            folderId=folder_id,
+            trns=trn,
+        )
+        # tidalapi's request() raises on any non-2xx, so reaching here means success.
+        return True
+    except Exception as e:
+        logger.warning("Folder assignment failed: {error}", error=repr(e))
+        return False
+
+
+async def remove_folder(session: tidalapi.Session, folder_id: str) -> bool:
+    """Deletes a V2 folder. Returns True on success."""
+    try:
+        await execute_network(
+            _v2,
+            session,
+            "PUT",
+            f"{_V2_PATH}/remove",
+            data=b"",
+            trns=f"trn:folder:{folder_id}",
+        )
+        # tidalapi's request() raises on any non-2xx, so reaching here means success.
+        return True
+    except Exception as e:
+        logger.warning("Folder removal failed: {error}", error=repr(e))
+        return False
+
+
+async def ensure_v2_folder_exists(session: tidalapi.Session, name: str) -> str | None:
+    """Returns the id of the folder named `name`, creating it if absent.
+
+    `name` is the sanitised directory name (slashes and illegal characters
+    already stripped). Tidal stores the raw name, so compare against the
+    sanitised form to avoid creating a duplicate of an existing folder.
+    """
+    for folder_id, folder_name in await fetch_v2_folders(session):
+        if sanitize_filename(folder_name) == name:
+            return folder_id
+    return await create_folder(session, name)
+
+
+async def assign_playlist_to_v2_folder(
+    session: tidalapi.Session, playlist_id: str, folder_id: str
+) -> bool:
+    """Moves a playlist into a folder. Thin wrapper over assign_playlist."""
+    return await assign_playlist(session, playlist_id, folder_id)

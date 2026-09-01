@@ -10,9 +10,18 @@ dependencies = [
     "typer>=0.12.1",
     "pydantic>=2.12.2",
     "rich>=14.2.0",
-    "requests==2.33.1",
+    "requests>=2.32.0",
     "orjson>=3.11.9",
     "loguru>=0.7.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
 ]
 
 [project.scripts]
@@ -31,3 +40,16 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+# Non-blocking: reports type gaps without failing the build. After the
+# package layout was fixed and the TidalUser protocol gained create_playlist,
+# mypy reports 0 errors across the source tree.
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true

@@ -1,0 +1,136 @@
+"""End-to-end CLI behaviour through typer's runner.
+
+Unit tests reach the engine functions directly, so they cannot see the
+confirmation ordering, whether the account id is shown, or whether a
+mismatched confirmation leaves the account untouched.
+"""
+
+import pytest
+from typer.testing import CliRunner
+
+from tidal_sync import cli as cli_module
+from tidal_sync.cli import app
+
+runner = CliRunner()
+
+
+class FakeUser:
+    id = 4242
+
+
+@pytest.fixture
+def fake_session(monkeypatch):
+    """Replaces authentication so a test never touches the network."""
+
+    calls: list[str] = []
+
+    def _get_session(profile="default"):
+        calls.append(profile)
+        return type("S", (), {"user": FakeUser()})()
+
+    async def _purge(session, target, dry_run=False):
+        calls.append(f"purge:{target}:dry_run={dry_run}")
+        return type("R", (), {"requested": 2, "deleted": 2, "failed": 0, "failures": []})()
+
+    monkeypatch.setattr(cli_module, "get_session", _get_session)
+    monkeypatch.setattr(cli_module, "purge_target_category_async", _purge)
+    return calls
+
+
+def test_mismatched_confirmation_never_purges(fake_session):
+    result = runner.invoke(app, ["clear", "tracks"], input="wrong\n")
+
+    assert "Confirmation did not match" in result.output
+    assert not any(str(c).startswith("purge:") for c in fake_session)
+
+
+def test_matching_confirmation_purges(fake_session):
+    result = runner.invoke(app, ["clear", "tracks"], input="default\n")
+
+    assert result.exit_code == 0, result.output
+    assert any(str(c).startswith("purge:tracks") for c in fake_session)
+
+
+def test_force_skips_the_prompt_and_clears(fake_session):
+    result = runner.invoke(app, ["clear", "tracks", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert any(str(c).startswith("purge:tracks") for c in fake_session)
+
+
+def test_account_id_is_shown_before_the_prompt(fake_session):
+    result = runner.invoke(app, ["clear", "tracks"], input="wrong\n")
+
+    # F9: the operator must be told which account they are destroying
+    # before they confirm, and that requires authenticating first.
+    assert "4242" in result.output
+    assert "About to permanently delete" in result.output
+
+
+def test_profile_name_appears_in_the_prompt(fake_session):
+    result = runner.invoke(app, ["clear", "tracks", "--profile", "second"], input="wrong\n")
+
+    assert "second" in result.output
+
+
+def test_dry_run_reports_counts_without_deleting(fake_session):
+    result = runner.invoke(app, ["clear", "tracks", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "Dry run" in result.output
+    assert any("dry_run=True" in str(c) for c in fake_session)
+
+
+def test_import_value_error_is_caught_and_exits_cleanly(monkeypatch, tmp_path):
+    # MAJ-1: parse_csv raises BackupFileError on an all-invalid CSV; the
+    # single-file branch must catch it as TidalSyncError and exit 1, not
+    # blow up. Exercise the real parse_csv path by feeding it a CSV with
+    # no valid header rows rather than faking the call.
+    bad = tmp_path / "file.csv"
+    bad.write_text("garbage\n")
+
+    def _get_session(profile="default"):
+        return type("S", (), {"user": FakeUser()})()
+
+    monkeypatch.setattr(cli_module, "get_session", _get_session)
+
+    result = runner.invoke(app, ["import", str(bad)])
+
+    # MAJ-1: the BackupFileError is caught and reported through the summary
+    # path (exit 1 with a friendly message), not left as an uncaught
+    # exception.
+    assert result.exit_code == 1, result.output
+    assert bad.name in result.output
+    assert "tidal-sync could not complete" in result.output
+
+
+def test_successful_clear_command_exits_zero(fake_session):
+    # N-2 pin: the documented contract promises exit 0 on success.
+    result = runner.invoke(app, ["clear", "tracks", "--force"])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_import_missing_path_is_a_usage_error_exits_two(tmp_path):
+    # N-2 pin: Typer rejects a missing import path before any work begins
+    # and Click surfaces that as the standard usage-error code 2.
+    missing = tmp_path / "does_not_exist.csv"
+
+    result = runner.invoke(app, ["import", str(missing)])
+
+    assert result.exit_code == 2, result.output
+
+
+def test_clear_with_unknown_target_is_a_usage_error_exits_two():
+    # N-2 pin: ClearTarget is an enum, so an unrecognised value is rejected
+    # by the CLI before any purge runs and exits with code 2.
+    result = runner.invoke(app, ["clear", "not-a-real-target"])
+
+    assert result.exit_code == 2, result.output
+
+
+def test_unknown_command_is_a_usage_error_exits_two():
+    # N-2 pin: an unknown command is a Click usage error and exits 2.
+    result = runner.invoke(app, ["definitely-not-a-command"])
+
+    assert result.exit_code == 2, result.output

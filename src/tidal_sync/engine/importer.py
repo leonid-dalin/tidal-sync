@@ -25,7 +25,6 @@ fallbacks, and orchestrates the upload queues.
 """
 
 import asyncio
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -37,6 +36,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn
 from ..domain.exceptions import TidalTransientError
 from ..domain.models import AlbumRow, ArtistRow, TrackRow
 from ..domain.protocols import TidalUser
+from ..domain.results import UploadOutcome
 from .folders import assign_playlist_to_v2_folder, ensure_v2_folder_exists
 from .match_policy import decide
 from .network import CHUNK_SIZE, execute_network, fetch_all_async
@@ -172,19 +172,6 @@ async def resolve_track_to_id(
         return str(tracks[0].id)
 
     return None
-
-
-@dataclass
-class UploadOutcome:
-    """What a batch upload actually achieved.
-
-    Tidal answers 200 and silently skips tracks it will not accept, so the
-    accepted and rejected ids are reported separately rather than inferred
-    from the absence of an exception.
-    """
-
-    applied: list[str]
-    rejected: list[str]
 
 
 def build_playlist_uploader(playlist: Any):

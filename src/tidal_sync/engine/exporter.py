@@ -19,19 +19,25 @@ from rich.console import Console
 from ..domain.protocols import TidalUser
 from .network import execute_network, fetch_all_async, fetch_blocked_artists
 from .parser import (
+    UniquePathAllocator,
     normalises_playlist_id,
     sanitize_filename,
     write_albums_csv_sync,
     write_artists_csv_sync,
     write_tracks_csv_sync,
 )
+from .workers import run_headless_tasks_async
 
 console = Console()
 
 
 async def fetch_and_serialise_tracks(
-    name: str, target_dir: Path, fetch_items_coro: Any, log_type: str
-) -> None:
+    name: str,
+    target_dir: Path,
+    fetch_items_coro: Any,
+    log_type: str,
+    allocator: "UniquePathAllocator",
+) -> int:
     """
     Retrieves track metadata from the network and offloads file writing to the disk.
 
@@ -39,25 +45,20 @@ async def fetch_and_serialise_tracks(
     and immediately passes the blocking I/O write operation to a background
     thread, preventing the async event loop from freezing during large backups.
 
-    Args:
-        name (str): The raw name of the playlist or collection.
-        target_dir (Path): The destination directory on the local filesystem.
-        fetch_items_coro (Any): The API endpoint or coroutine to retrieve the tracks.
-        log_type (str): The category used for telemetry (e.g., 'Playlist', 'Mix').
+        allocator (UniquePathAllocator): Hands out non-colliding paths for
+            this export run. Two collections sharing a name must not open
+            the same file.
+    Returns:
+        int: The number of rows written.
     """
-    try:
-        tracks = await fetch_all_async(fetch_items_coro)
-        if not tracks:
-            return
+    tracks = await fetch_all_async(fetch_items_coro)
+    if not tracks:
+        return 0
 
-        safe_name = sanitize_filename(name)
-        file_path = target_dir / f"{safe_name}.csv"
-
-        await asyncio.to_thread(write_tracks_csv_sync, file_path, tracks)
-        logger.bind(audit=True).debug("Snapshot Saved", type=log_type, name=name)
-
-    except Exception as e:
-        logger.error(f"Failed to export {log_type} '{name}'", error=str(e))
+    file_path = allocator.allocate(target_dir, name)
+    rows = await asyncio.to_thread(write_tracks_csv_sync, file_path, tracks)
+    logger.bind(audit=True).debug("Snapshot Saved", type=log_type, name=name, rows=rows)
+    return rows
 
 
 async def build_playlist_folder_map(session: tidalapi.Session) -> dict[str, str]:
@@ -248,19 +249,36 @@ async def export_user_playlists_to_disk(session: tidalapi.Session, base_dir: Pat
         folder_map = await build_playlist_folder_map(session)
         console.print(f"[cyan]Exporting {len(playlists)} Playlists...[/cyan]")
 
-        async with asyncio.TaskGroup() as tg:
-            for pl in playlists:
-                normalized_pl_id = normalises_playlist_id(pl.id)
-                folder_name = folder_map.get(normalized_pl_id)
+        allocator = UniquePathAllocator()
+        exported = 0
+        failures: list[str] = []
 
-                if folder_name:
-                    target_dir = base_dir / "Playlists" / folder_name
-                else:
-                    target_dir = base_dir / "Playlists"
+        async def _export_one(pl: Any) -> None:
+            nonlocal exported
+            normalized_pl_id = normalises_playlist_id(pl.id)
+            folder_name = folder_map.get(normalized_pl_id)
 
-                tg.create_task(
-                    fetch_and_serialise_tracks(pl.name, target_dir, pl.tracks, "Playlist")
+            if folder_name:
+                target_dir = base_dir / "Playlists" / folder_name
+            else:
+                target_dir = base_dir / "Playlists"
+
+            try:
+                exported += await fetch_and_serialise_tracks(
+                    pl.name, target_dir, pl.tracks, "Playlist", allocator
                 )
+            except Exception as e:
+                # TaskGroup cancels every sibling on the first unhandled
+                # exception, so one bad playlist must not escape here.
+                failures.append(f"{pl.name}: {e}")
+                logger.error("Export failed for {name}", name=pl.name, error=repr(e))
+
+        await run_headless_tasks_async(playlists, _export_one)
+
+        if failures:
+            console.print(f"\n[bold red]{len(failures)} playlist(s) failed:[/bold red]")
+            for detail in failures[:20]:
+                console.print(f"  [dim]{detail}[/dim]")
     except Exception as e:
         logger.error("Failed to export playlists", error=str(e))
 
@@ -310,48 +328,60 @@ async def export_algorithmic_mixes_to_disk(session: tidalapi.Session, base_dir: 
 
         console.print(f"[cyan]Snapshotting {len(all_stations)} Mixes & Radios...[/cyan]")
 
-        async with asyncio.TaskGroup() as tg:
-            for station in all_stations:
-                station_name = getattr(
-                    station,
-                    "title",
-                    getattr(station, "name", getattr(station, "id", "Unknown Station")),
+        allocator = UniquePathAllocator()
+        failures: list[str] = []
+
+        async def _export_station(station: Any) -> None:
+            station_name = getattr(
+                station,
+                "title",
+                getattr(station, "name", getattr(station, "id", "Unknown Station")),
+            )
+            fetch_target = None
+
+            for attr in ("get_items", "get_tracks", "items", "tracks"):
+                if hasattr(station, attr):
+                    fetch_target = getattr(station, attr)
+                    break
+
+            if fetch_target is None and type(station).__name__ == "MixV2":
+
+                def _get_v2_items(st=station):
+                    if not getattr(st, "_retrieved", False):
+                        st.get()
+                    return getattr(st, "_items", []) or []
+
+                fetch_target = _get_v2_items
+
+            if fetch_target is None:
+                logger.warning(f"Station '{station_name}' has no track parsing function available.")
+                return
+
+            if isinstance(fetch_target, list):
+
+                def _wrap_list(items: list[Any]) -> Callable[..., list[Any]]:
+                    return lambda **kwargs: items
+
+                safe_fetch = _wrap_list(fetch_target)
+            else:
+                safe_fetch = fetch_target
+
+            try:
+                await fetch_and_serialise_tracks(
+                    str(station_name), target_dir, safe_fetch, "Mix/Radio", allocator
                 )
-                fetch_target = None
+            except Exception as e:
+                # TaskGroup cancels every sibling on the first unhandled
+                # exception, so one bad station must not escape here.
+                failures.append(f"{station_name}: {e}")
+                logger.error("Export failed for {name}", name=station_name, error=repr(e))
 
-                for attr in ("get_items", "get_tracks", "items", "tracks"):
-                    if hasattr(station, attr):
-                        fetch_target = getattr(station, attr)
-                        break
+        await run_headless_tasks_async(all_stations, _export_station)
 
-                if fetch_target is None and type(station).__name__ == "MixV2":
-
-                    def _get_v2_items(st=station):
-                        if not getattr(st, "_retrieved", False):
-                            st.get()
-                        return getattr(st, "_items", []) or []
-
-                    fetch_target = _get_v2_items
-
-                if fetch_target is not None:
-                    if isinstance(fetch_target, list):
-
-                        def _wrap_list(items: list[Any]) -> Callable[..., list[Any]]:
-                            return lambda **kwargs: items
-
-                        safe_fetch = _wrap_list(fetch_target)
-                    else:
-                        safe_fetch = fetch_target
-
-                    tg.create_task(
-                        fetch_and_serialise_tracks(
-                            str(station_name), target_dir, safe_fetch, "Mix/Radio"
-                        )
-                    )
-                else:
-                    logger.warning(
-                        f"Station '{station_name}' has no track parsing function available."
-                    )
+        if failures:
+            console.print(f"\n[bold red]{len(failures)} mix(es)/radio(s) failed:[/bold red]")
+            for detail in failures[:20]:
+                console.print(f"  [dim]{detail}[/dim]")
 
     except Exception as e:
         logger.error("Failed to fetch algorithmic stations", error=str(e))

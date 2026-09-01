@@ -35,9 +35,61 @@ def normalises_playlist_id(raw_id: str | Any) -> str:
     return clean_id
 
 
+_RESERVED_WINDOWS_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
+_MAX_FILENAME_BYTES = 200  # leaves room for the "-N.csv" suffix
+
+
 def sanitize_filename(name: str) -> str:
-    """Removes illegal OS characters to ensure safe cross-platform file saving."""
-    return re.sub(r'[<>:"/\\|?*]', "_", name).strip()
+    """Removes illegal OS characters and clamps the result to a safe filename."""
+    # Separators are replaced, not stripped, so a leading .. cannot survive
+    # as a traversal component once the slashes around it are gone.
+    pattern = r"[\\<>:/|?*\x00-\x1f]"
+    cleaned = re.sub(pattern, "_", name).strip()
+    cleaned = re.sub(r"\^\.+|\.+$", "", cleaned)
+    if not cleaned:
+        return "untitled"
+
+    if cleaned.lower() in _RESERVED_WINDOWS_NAMES:
+        cleaned = f"_{cleaned}"
+
+    encoded = cleaned.encode("utf-8")
+    if len(encoded) > _MAX_FILENAME_BYTES:
+        cleaned = encoded[:_MAX_FILENAME_BYTES].decode("utf-8", errors="ignore").rstrip()
+
+    return cleaned or "untitled"
+
+
+class UniquePathAllocator:
+    """Hands out non-colliding .csv paths within an export run.
+
+    Callers run concurrently, so this removes the possibility of two tasks
+    opening the same path for writing. Allocation happens on the event loop
+    thread before work reaches a worker, so no lock is required.
+    """
+
+    def __init__(self) -> None:
+        self._seen: set[str] = set()
+
+    def allocate(self, directory: Path, name: str) -> Path:
+        base = sanitize_filename(name)
+        candidate = directory / f"{base}.csv"
+        key = str(candidate).casefold()
+
+        suffix = 2
+        while key in self._seen:
+            candidate = directory / f"{base}-{suffix}.csv"
+            key = str(candidate).casefold()
+            suffix += 1
+
+        self._seen.add(key)
+        return candidate
 
 
 def _atomic_write_csv(file_path: Path, write_rows) -> int:

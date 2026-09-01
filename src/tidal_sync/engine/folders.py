@@ -17,7 +17,7 @@ from typing import Any, Literal
 import tidalapi
 from loguru import logger
 
-from .network import execute_network
+from .network import execute_network, paginate
 from .parser import normalises_playlist_id, sanitize_filename
 
 _V2_PATH = "my-collection/playlists/folders"
@@ -50,15 +50,15 @@ def _v2(
 async def fetch_v2_folders(session: tidalapi.Session) -> list[tuple[str, str]]:
     """Lists every V2 folder as (id, name) pairs.
 
-    Stops on an empty page, a short page, or a page identical to the previous
-    one. Without that last guard an endpoint that ignores `offset` would loop
+    Stops on an empty page, a short page, or a page that repeats ids already
+    seen. Without that last guard an endpoint that ignores `offset` would loop
     forever issuing calls into the gate.
     """
-    folders: list[tuple[str, str]] = []
-    offset = 0
-    last_ids: list[str] = []
 
-    while True:
+    def key(item: dict[str, Any]) -> str:
+        return str(item.get("data", {}).get("uuid") or item.get("uuid") or "")
+
+    async def fetch_page(offset: int, limit: int) -> list[dict[str, Any]]:
         res = await execute_network(
             _v2,
             session,
@@ -66,40 +66,29 @@ async def fetch_v2_folders(session: tidalapi.Session) -> list[tuple[str, str]]:
             f"{_V2_PATH}/flattened",
             includeOnly="FOLDER",
             offset=offset,
-            limit=_PAGE_SIZE,
+            limit=limit,
         )
-        items = res.json().get("items", [])
-        if not items:
-            break
+        return res.json().get("items", [])
 
-        current_ids = [
-            str(item.get("data", {}).get("uuid") or item.get("uuid") or "") for item in items
-        ]
-        if offset > 0 and current_ids == last_ids:
-            break
+    raw = await paginate(fetch_page, page_size=_PAGE_SIZE, key=key, stop_on_short_page=True)
 
-        for item in items:
-            data = item.get("data", {})
-            folder_id = data.get("id") or data.get("uuid") or item.get("id")
-            folder_name = data.get("name") or data.get("title") or item.get("name")
-            if folder_id and folder_name:
-                folders.append((str(folder_id), str(folder_name)))
-
-        last_ids = current_ids
-        offset += len(items)
-        if len(items) < _PAGE_SIZE:
-            break
-
+    folders: list[tuple[str, str]] = []
+    for item in raw:
+        data = item.get("data", {})
+        folder_id = data.get("id") or data.get("uuid") or item.get("id")
+        folder_name = data.get("name") or data.get("title") or item.get("name")
+        if folder_id and folder_name:
+            folders.append((str(folder_id), str(folder_name)))
     return folders
 
 
 async def fetch_folder_playlists(session: tidalapi.Session, folder_id: str) -> list[str]:
     """Lists the playlist UUIDs directly inside a folder."""
-    uuids: list[str] = []
-    offset = 0
-    last_ids: list[str] = []
 
-    while True:
+    def key(item: dict[str, Any]) -> str:
+        return str(item.get("id") or item.get("uuid") or "")
+
+    async def fetch_page(offset: int, limit: int) -> list[dict[str, Any]]:
         res = await execute_network(
             _v2,
             session,
@@ -107,31 +96,22 @@ async def fetch_folder_playlists(session: tidalapi.Session, folder_id: str) -> l
             _V2_PATH,
             folderId=folder_id,
             offset=offset,
-            limit=_PAGE_SIZE,
+            limit=limit,
         )
-        items = res.json().get("items", [])
-        if not items:
-            break
+        return res.json().get("items", [])
 
-        current_ids = [str(item.get("id") or item.get("uuid") or "") for item in items]
-        if offset > 0 and current_ids == last_ids:
-            break
+    raw = await paginate(fetch_page, page_size=_PAGE_SIZE, key=key, stop_on_short_page=True)
 
-        for item in items:
-            data = item.get("data", {})
-            pl_uuid = data.get("uuid") or data.get("id")
-            if not pl_uuid and isinstance(item.get("playlist"), dict):
-                pl_uuid = item["playlist"].get("uuid") or item["playlist"].get("id")
-            if not pl_uuid:
-                pl_uuid = item.get("id") or item.get("uuid")
-            if pl_uuid:
-                uuids.append(str(pl_uuid))
-
-        last_ids = current_ids
-        offset += len(items)
-        if len(items) < _PAGE_SIZE:
-            break
-
+    uuids: list[str] = []
+    for item in raw:
+        data = item.get("data", {})
+        pl_uuid = data.get("uuid") or data.get("id")
+        if not pl_uuid and isinstance(item.get("playlist"), dict):
+            pl_uuid = item["playlist"].get("uuid") or item["playlist"].get("id")
+        if not pl_uuid:
+            pl_uuid = item.get("id") or item.get("uuid")
+        if pl_uuid:
+            uuids.append(str(pl_uuid))
     return uuids
 
 

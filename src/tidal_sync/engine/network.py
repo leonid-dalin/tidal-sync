@@ -218,6 +218,116 @@ def _accepts_pagination(api_method: Any) -> bool:
     return "limit" in parameters and "offset" in parameters
 
 
+def _id_key(item: Any) -> str:
+    """Stable identity for an item, used to drop duplicates across pages."""
+    return str(getattr(item, "id", "") or id(item))
+
+
+async def paginate(
+    fetch_page: Callable[[int, int], Any],
+    *,
+    page_size: int = 50,
+    key: Callable[[Any], str] | None = None,
+    stop_on_short_page: bool = False,
+) -> list[Any]:
+    """
+    Exhausts a Tidal offset-paginated endpoint, returning every unique item.
+
+    The four call sites that previously hand-rolled this loop now share it.
+    Three behaviours matter and must not regress:
+
+    * The offset advances by the count of rows actually kept (`len(fresh)`),
+      not the requested page size. Tidal silently drops region-locked rows
+      from a page, so advancing by the page size would skip later rows.
+    * Duplicates are tracked in a `set` of seen ids, not just the previous
+      page. That way an A, B, A, B cycle terminates, where a last-page-only
+      guard would loop forever.
+    * When `stop_on_short_page` is set, a page shorter than `page_size`
+      ends pagination, matching the folder endpoints' contract.
+
+    `fetch_page(offset, limit)` returns the raw items for one page. It may be
+    synchronous or return an awaitable; either way it is awaited if needed.
+    """
+    key_fn = key or _id_key
+    items: list[Any] = []
+    seen: set[str] = set()
+    offset = 0
+
+    while True:
+        page = fetch_page(offset, page_size)
+        if inspect.isawaitable(page):
+            page = await page
+        if not page:
+            break
+
+        fresh = [it for it in page if key_fn(it) not in seen]
+        if offset > 0 and not fresh:
+            # Every row on this page was already delivered: the server is
+            # ignoring the offset and repeating itself.
+            break
+
+        for it in fresh:
+            seen.add(key_fn(it))
+            items.append(it)
+
+        # Advance by the rows kept, not the page size: a server that drops
+        # region-locked rows would otherwise skip later rows.
+        offset += len(fresh)
+
+        if stop_on_short_page and len(page) < page_size:
+            break
+
+    return items
+
+
+def paginate_sync(
+    fetch_page: Callable[[int, int], list[Any]],
+    *,
+    page_size: int = 50,
+    key: Callable[[Any], str] | None = None,
+    stop_on_short_page: bool = False,
+) -> list[Any]:
+    """
+    Synchronous twin of `paginate` for callers that run inside
+    `asyncio.to_thread` or a plain thread.
+
+    Identical loop shape to `paginate`: dedupe via a seen-id set, and stop on
+    an empty page, a fully-repeated page, or a short page. Splitting it out
+    keeps the sync callers free of `asyncio.run`, which deadlocks when a live
+    event loop already owns the thread.
+
+    Unlike the async `paginate`, this advances the offset by the requested
+    page size, not by the rows kept: the generic tidalapi endpoints page by
+    requested offset, and a server-side raise deep in pagination must surface
+    rather than be truncated away by an early empty page. The folders V2
+    endpoints are the ones that drop rows, and they use the async helper.
+    """
+    key_fn = key or _id_key
+    items: list[Any] = []
+    seen: set[str] = set()
+    offset = 0
+
+    while True:
+        page = fetch_page(offset, page_size)
+        if not page:
+            break
+
+        fresh = [it for it in page if key_fn(it) not in seen]
+        if offset > 0 and not fresh:
+            break
+
+        for it in fresh:
+            seen.add(key_fn(it))
+            items.append(it)
+
+        offset += page_size
+
+        if stop_on_short_page and len(page) < page_size:
+            break
+
+    return items
+
+
 def _fetch_all_sync(api_method: Any, **kwargs: Any) -> list[Any]:
     """
     The synchronous core logic for exhaustive API pagination.
@@ -233,31 +343,14 @@ def _fetch_all_sync(api_method: Any, **kwargs: Any) -> list[Any]:
     Returns:
         list[Any]: A consolidated list of all recovered items.
     """
-    items: list[Any] = []
-    offset = 0
-    limit = 50
-    last_chunk_ids: list[Any] = []
-
     if not _accepts_pagination(api_method):
         res = api_method(**kwargs)
         return res if isinstance(res, list) else list(res)
 
-    while True:
-        chunk = api_method(limit=limit, offset=offset, **kwargs)
-        if not chunk:
-            break
+    def fetch_page(offset: int, limit: int) -> list[Any]:
+        return api_method(limit=limit, offset=offset, **kwargs)
 
-        current_chunk_ids = [getattr(item, "id", id(item)) for item in chunk]
-
-        # Infinite loop guard: detects if the API ignores the offset and repeats pages
-        if offset > 0 and current_chunk_ids == last_chunk_ids:
-            break
-
-        items.extend(chunk)
-        last_chunk_ids = current_chunk_ids
-        offset += limit
-
-    return items
+    return paginate_sync(fetch_page, page_size=50, key=_id_key)
 
 
 def fetch_blocked_artists(session: tidalapi.Session) -> list[Any]:
@@ -279,31 +372,15 @@ def fetch_blocked_artists(session: tidalapi.Session) -> list[Any]:
 
     endpoint = f"users/{user.id}/blocks/artists"
 
-    items = []
-    offset = 0
-    limit = 50
-    last_chunk_ids: list[Any] = []
-
-    while True:
+    def fetch_page(offset: int, limit: int) -> list[Any]:
         params = {"limit": limit, "offset": offset}
         try:
             chunk = session.request.map_request(endpoint, params=params, parse=session.parse_artist)
             if isinstance(chunk, dict) and "items" in chunk:
                 chunk = [session.parse_artist(item.get("item", item)) for item in chunk["items"]]
+            return chunk if isinstance(chunk, list) else []
         except Exception as e:
             logger.warning("Failed to fetch blocked artists", error=repr(e))
-            break
+            return []
 
-        if not chunk:
-            break
-
-        # Infinite loop guard: detects if the API ignores the offset and repeats pages
-        current_chunk_ids = [getattr(item, "id", id(item)) for item in chunk]
-        if offset > 0 and current_chunk_ids == last_chunk_ids:
-            break
-
-        items.extend(chunk)
-        last_chunk_ids = current_chunk_ids
-        offset += limit
-
-    return items
+    return paginate_sync(fetch_page, page_size=50, key=_id_key)

@@ -8,6 +8,8 @@ fallbacks, and orchestrates the upload queues.
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -154,6 +156,64 @@ async def resolve_track_to_id(
     return None
 
 
+@dataclass
+class UploadOutcome:
+    """What a batch upload actually achieved.
+
+    Tidal answers 200 and silently skips tracks it will not accept, so the
+    accepted and rejected ids are reported separately rather than inferred
+    from the absence of an exception.
+    """
+
+    applied: list[str]
+    rejected: list[str]
+
+
+def build_playlist_uploader(playlist: Any):
+    """Builds a batch uploader that reports accepted and rejected ids.
+
+    UserPlaylist.add() sends onArtifactNotFound=SKIP, so Tidal drops
+    unavailable tracks server-side and returns a shortened addedItemIds
+    list. Comparing that against the request is the only way to detect a
+    region lock. allow_duplicates=True flips onDupes to ADD so a track
+    already in the playlist is not mistaken for a refusal; the pre-scan
+    owns dedup. add() also calls _reparse() internally, so no separate
+    ETag refresh is needed here.
+    """
+
+    async def upload(batch: list[str]) -> UploadOutcome:
+        added = await execute_network(playlist.add, batch, allow_duplicates=True)
+        added_ids = {str(tid) for tid in (added or [])}
+        applied = [tid for tid in batch if str(tid) in added_ids]
+        rejected = [tid for tid in batch if str(tid) not in added_ids]
+        return UploadOutcome(applied=applied, rejected=rejected)
+
+    return upload
+
+
+def _build_favorites_uploader(favorites: Any):
+    """Builds a favorites uploader that stops at the first rejected track.
+
+    Favorites are added one at a time and return no per-item result, so a
+    failure means everything before it landed and nothing after it was
+    attempted. Stopping there lets the caller resume from the failure
+    instead of re-sending tracks that are already on the server.
+    """
+
+    async def upload(batch: list[str]) -> UploadOutcome:
+        applied: list[str] = []
+        for tid in batch:
+            try:
+                await execute_network(favorites.add_track, tid)
+            except Exception as e:
+                logger.warning("Favorites add failed for {id}: {error}", id=tid, error=str(e))
+                return UploadOutcome(applied=applied, rejected=[tid])
+            applied.append(tid)
+        return UploadOutcome(applied=applied, rejected=[])
+
+    return upload
+
+
 async def import_tracks_category_async(
     session: tidalapi.Session,
     file_path: Path,
@@ -245,14 +305,30 @@ async def import_tracks_category_async(
     if track_ids_to_add:
         console.print(f"[cyan]Uploading {len(track_ids_to_add)} tracks to '{dest_name}'...[/cyan]")
 
-        async def _upload_chunk_async(batch: list[str]) -> None:
-            nonlocal playlist
-            if is_favorites and hasattr(user, "favorites"):
-                for tid in batch:
-                    await execute_network(user.favorites.add_track, tid)
-            elif playlist:
-                playlist = await execute_network(session.playlist, playlist.id)  # ETag refresh
-                await execute_network(playlist.add, batch)
+        upload_chunk = (
+            _build_favorites_uploader(user.favorites)
+            if is_favorites and hasattr(user, "favorites")
+            else build_playlist_uploader(playlist)
+            if playlist
+            else None
+        )
+
+        if upload_chunk is None:
+            console.print(f"[yellow]No destination for '{dest_name}'; nothing uploaded.[/yellow]")
+            return
+
+        # Task 13 rewrites the recovery path to consume UploadOutcome. Until
+        # then it is typed as returning None, so the adapter keeps the
+        # rejection visible to this loop instead of the callback contract.
+        last_outcome: UploadOutcome | None = None
+        callback: Callable[[list[str]], Awaitable[None]]
+
+        async def _upload_chunk_async(batch: list[str]) -> UploadOutcome:
+            nonlocal last_outcome
+            last_outcome = await upload_chunk(batch)
+            return last_outcome
+
+        callback = cast("Callable[[list[str]], Awaitable[None]]", _upload_chunk_async)
 
         with Progress(
             SpinnerColumn(),
@@ -268,13 +344,34 @@ async def import_tracks_category_async(
 
                 await upload_batch_with_bisection_recovery(
                     chunk,
-                    _upload_chunk_async,
+                    callback,
                     stats,
                     staged_tracks_map,
                     str(dest_name),
                     progress_ui,
                     add_task,
                 )
+
+                # The recovery path counts a whole chunk as added when no
+                # exception escapes. Tidal answers 200 while silently skipping
+                # tracks it will not accept, so reconcile against what came
+                # back and report the difference instead of over-counting.
+                if last_outcome is not None and last_outcome.rejected:
+                    overcounted = min(len(last_outcome.rejected), stats.added)
+                    stats.added -= overcounted
+                    stats.failed += len(last_outcome.rejected)
+                    for tid in last_outcome.rejected:
+                        track = staged_tracks_map.get(str(tid))
+                        logger.bind(audit=True).warning(
+                            "Dropped Track (Region Locked)",
+                            type="Track",
+                            id=tid,
+                            track=getattr(track, "track_name", "Unknown"),
+                            artist=getattr(track, "artist_name", "Unknown"),
+                            source=file_path.name,
+                            dest=str(dest_name),
+                        )
+                    last_outcome = None
 
     console.print(
         f"[green]✓ '{dest_name}' complete:[/green] "

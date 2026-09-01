@@ -256,7 +256,7 @@ def parse_csv[T: BaseModel](file_path: Path, model_class: type[T]) -> list[T]:
         except UnicodeDecodeError:
             if encoding == encodings[-1]:
                 logger.error("Failed to decode CSV", file=file_path.name, error="Unknown encoding")
-                return []
+                raise BackupFileError(f"{file_path.name}: unknown encoding") from None
             continue
 
     # Every fallback encoding accepts nearly any byte sequence, so a corrupt

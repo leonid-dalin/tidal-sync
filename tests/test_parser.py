@@ -77,6 +77,25 @@ def test_drop_message_names_the_line_and_file(tmp_path, log_records):
     assert "Field required" in dropped[0], dropped[0]
 
 
+def test_unknown_encoding_branch_raises_instead_of_returning_empty():
+    # m-2: the fallback chain cannot return an empty list. latin-1 decodes
+    # every byte sequence, so the unreachable branch was deleted; the
+    # function now raises BackupFileError if the chain does fail. Pin the
+    # source-level invariant so a future contributor cannot reintroduce
+    # the silent return.
+    import re
+    from pathlib import Path
+
+    import tidal_sync.engine.parser as parser_module
+
+    source = Path(parser_module.__file__).read_text(encoding="utf-8")
+    func_match = re.search(r"def parse_csv\b.*?(?=\ndef |\nclass |\Z)", source, flags=re.DOTALL)
+    assert func_match, "parse_csv body not found"
+    body = func_match.group(0)
+    assert "return []" not in body, f"parse_csv still returns an empty list:\n{body}"
+    assert "raise BackupFileError" in body
+
+
 def test_exported_tracks_reimport_with_album_intact(tmp_path):
     """Round-trip: whatever the writer emits, the parser must read back."""
     from tests.fakes import FakeAlbum, FakeTrack

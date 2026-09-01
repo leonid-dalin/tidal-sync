@@ -53,3 +53,71 @@ async def test_dry_run_deletes_nothing():
     assert report.requested == 2
     assert report.deleted == 0
     assert report.failed == 0
+
+
+class FolderSession:
+    """Has one playlist and two folders; folders are counted even on dry run."""
+
+    class user:
+        id = 1
+
+        class favorites:
+            @staticmethod
+            def tracks(**kw):
+                return []
+
+            @staticmethod
+            def albums(**kw):
+                return []
+
+            @staticmethod
+            def artists(**kw):
+                return []
+
+        @staticmethod
+        def playlists(**kw):
+            pl = type("P", (), {"id": "p1"})()
+
+            def _delete():
+                return None
+
+            pl.delete = _delete
+            return [pl]
+
+
+async def test_dry_run_counts_folders_like_a_live_run(monkeypatch):
+    # CRIT-1: folders must be counted on a dry run, not just deleted live.
+    folders = [("f1", "A"), ("f2", "B")]
+
+    async def _fake_fetch_v2_folders(session):
+        return list(folders)
+
+    async def _fake_remove_folder(session, folder_id):
+        return True
+
+    monkeypatch.setattr("tidal_sync.engine.wiping.fetch_v2_folders", _fake_fetch_v2_folders)
+    monkeypatch.setattr("tidal_sync.engine.wiping.remove_folder", _fake_remove_folder)
+
+    live = await purge_target_category_async(FolderSession(), ClearTarget.ALL)
+    dry = await purge_target_category_async(FolderSession(), ClearTarget.ALL, dry_run=True)
+
+    assert dry.requested == live.requested, (dry.requested, live.requested)
+    assert dry.deleted == 0
+    assert live.deleted == len(folders) + 1  # one playlist plus two folders
+
+
+async def test_requested_is_an_upper_bound_on_deleted_plus_failed(monkeypatch):
+    # MAJ-6: every target is accounted for, so failures cannot exceed requested.
+    folders = [("f1", "A"), ("f2", "B")]
+
+    async def _fake_fetch_v2_folders(session):
+        return list(folders)
+
+    async def _fake_remove_folder(session, folder_id):
+        return True
+
+    monkeypatch.setattr("tidal_sync.engine.wiping.fetch_v2_folders", _fake_fetch_v2_folders)
+    monkeypatch.setattr("tidal_sync.engine.wiping.remove_folder", _fake_remove_folder)
+
+    report = await purge_target_category_async(FolderSession(), ClearTarget.ALL)
+    assert report.deleted + report.failed <= report.requested

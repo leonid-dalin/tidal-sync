@@ -14,7 +14,7 @@ from tidal_sync.cli import app
 runner = CliRunner()
 
 
-class FakeSession:
+class FakeUser:
     id = 4242
 
 
@@ -26,7 +26,7 @@ def fake_session(monkeypatch):
 
     def _get_session(profile="default"):
         calls.append(profile)
-        return type("S", (), {"user": FakeSession()})()
+        return type("S", (), {"user": FakeUser()})()
 
     async def _purge(session, target, dry_run=False):
         calls.append(f"purge:{target}:dry_run={dry_run}")
@@ -79,3 +79,28 @@ def test_dry_run_reports_counts_without_deleting(fake_session):
     assert result.exit_code == 0, result.output
     assert "Dry run" in result.output
     assert any("dry_run=True" in str(c) for c in fake_session)
+
+
+def test_import_value_error_is_caught_and_exits_cleanly(monkeypatch, tmp_path):
+    # MAJ-1: parse_csv raises ValueError on an all-invalid CSV; the single-file
+    # branch must catch it like TidalSyncError and exit 1, not blow up.
+    bad = tmp_path / "file.csv"
+    bad.write_text("garbage\n")
+
+    def _get_session(profile="default"):
+        return type("S", (), {"user": FakeUser()})()
+
+    def _boom(session, target_path, target_playlist_name=None):
+        raise ValueError(f"no valid rows in {target_path.name}")
+
+    monkeypatch.setattr(cli_module, "get_session", _get_session)
+    monkeypatch.setattr(cli_module, "import_collection_from_disk", _boom)
+
+    result = runner.invoke(app, ["import", str(bad)])
+
+    # MAJ-1: the ValueError is caught and reported through the summary path
+    # (exit 1 with a friendly message), not left as an uncaught exception.
+    assert result.exit_code == 1, result.output
+    assert not isinstance(result.exception, ValueError), result.output
+    assert bad.name in result.output
+    assert "tidal-sync could not complete" in result.output

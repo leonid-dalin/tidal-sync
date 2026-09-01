@@ -41,7 +41,9 @@ class PurgeReport:
             self.failures.append(detail)
 
 
-async def _purge_v2_folders_async(session: tidalapi.Session, report: PurgeReport) -> None:
+async def _purge_v2_folders_async(
+    session: tidalapi.Session, report: PurgeReport, dry_run: bool = False
+) -> None:
     """Deletes every V2 folder, accounting for each outcome."""
     try:
         folders = await fetch_v2_folders(session)
@@ -50,6 +52,12 @@ async def _purge_v2_folders_async(session: tidalapi.Session, report: PurgeReport
         return
 
     if not folders:
+        return
+
+    # Counted even on a dry run so the report reflects every target.
+    report.requested += len(folders)
+
+    if dry_run:
         return
 
     console.print(f"[cyan]Removing {len(folders)} folders...[/cyan]")
@@ -125,8 +133,8 @@ async def purge_target_category_async(
         playlists = await fetch_all_async(user.playlists)
         await _clear_category_async(playlists, lambda p: p.delete, "playlists")
 
-        if not dry_run:
-            await _purge_v2_folders_async(session, report)
+        # Folder purging counts targets on a dry run and only deletes when live.
+        await _purge_v2_folders_async(session, report, dry_run=dry_run)
 
     if not favorites_available:
         if target in (

@@ -129,7 +129,7 @@ def import_data(
     except TidalAuthenticationError as e:
         console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
         raise typer.Exit(1) from e
-    except TidalSyncError as e:
+    except (TidalSyncError, ValueError) as e:
         console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
         raise typer.Exit(1) from e
 
@@ -153,8 +153,6 @@ def export_all(
         output_dir (Path): The directory where the backup will be stored.
         profile (str): The authentication profile to export from.
     """
-    session = get_session(profile)
-    setup_audit_logging(output_dir / "reports")
 
     async def run_exports():
         async with asyncio.TaskGroup() as tg:
@@ -163,7 +161,12 @@ def export_all(
             tg.create_task(export_algorithmic_mixes_to_disk(session, output_dir))
 
     try:
+        session = get_session(profile)
+        setup_audit_logging(output_dir / "reports")
         asyncio.run(run_exports())
+    except TidalAuthenticationError as e:
+        console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+        raise typer.Exit(1) from e
     except TidalSyncError as e:
         console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
         raise typer.Exit(1) from e

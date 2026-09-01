@@ -29,13 +29,14 @@ batch size.
 from collections.abc import Callable
 from typing import Any, cast
 
+import requests
 import tidalapi
 from loguru import logger
 
 from ..domain.exceptions import TidalPoisonError, TidalTransientError
 from ..domain.protocols import TidalUser
 from ..domain.results import UploadOutcome
-from .network import execute_network
+from .network import execute_network, fetch_blocked_artists
 from .workers import run_headless_tasks_async
 
 
@@ -104,3 +105,77 @@ async def unlike_albums(session: tidalapi.Session, ids: list[str]) -> UploadOutc
     """Removes each album from the user's favourites."""
     user = cast(TidalUser, cast(object, session.user))
     return await _apply_per_id(ids, user.favorites.remove_album, "Unlike album")
+
+
+def _block_action(session: tidalapi.Session) -> Callable[[str], Any]:
+    """Builds the per-id POST action for blocking an artist.
+
+    tidalapi raises an HTTPError on 4xx, which would otherwise cancel the
+    sibling tasks through the TaskGroup. The probe did not exercise 4xx on
+    this endpoint, but a 4xx is this id's outcome: it is recorded as a
+    rejection rather than aborting the run.
+    """
+    user = cast(TidalUser, cast(object, session.user))
+    path = f"users/{user.id}/blocks/artists"
+
+    def _action(artist_id: str) -> Any:
+        try:
+            return session.request.request(
+                "POST",
+                path,
+                params=None,
+                data={"artistId": artist_id},
+            )
+        except requests.HTTPError:
+            return False
+
+    return _action
+
+
+def _unblock_action(session: tidalapi.Session) -> Callable[[str], Any]:
+    """Builds the per-id DELETE action for unblocking an artist."""
+    user = cast(TidalUser, cast(object, session.user))
+
+    def _action(artist_id: str) -> Any:
+        try:
+            return session.request.request(
+                "DELETE",
+                f"users/{user.id}/blocks/artists/{artist_id}",
+            )
+        except requests.HTTPError:
+            return False
+
+    return _action
+
+
+async def block_artists(session: tidalapi.Session, ids: list[str]) -> UploadOutcome:
+    """Blocks each artist id for the logged-in user.
+
+    Probe confirmed (2026-09-01, throwaway account): POST
+    users/{user_id}/blocks/artists with form field `artistId` returns 200
+    with an empty body. The follow-up GET is the network's job; this engine
+    trusts the per-id response.
+    """
+    return await _apply_per_id(ids, _block_action(session), "Block artist")
+
+
+async def unblock_artists(session: tidalapi.Session, ids: list[str]) -> UploadOutcome:
+    """Unblocks each artist id for the logged-in user.
+
+    Probe confirmed (2026-09-01, throwaway account): DELETE
+    users/{user_id}/blocks/artists/{artist_id} returns 204 with an empty
+    body. The per-artist path is the correct shape; a body-bearing DELETE on
+    the collection would be a different surface.
+    """
+    return await _apply_per_id(ids, _unblock_action(session), "Unblock artist")
+
+
+async def fetch_blocked_artist_ids(session: tidalapi.Session) -> list[str]:
+    """Lists the user's blocked artists as a flat list of string ids.
+
+    Thin caller over `fetch_blocked_artists`; the pagination and error
+    swallowing stay in network.py. Order matches the network order so the
+    caller can correlate positions across runs.
+    """
+    artists = await execute_network(fetch_blocked_artists, session)
+    return [str(a.id) for a in artists]

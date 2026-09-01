@@ -21,12 +21,13 @@ Every command that touches an account accepts `--profile`, `-p`. When omitted it
 
 ### Exit codes
 
-All commands follow the same contract:
+All commands follow the same three-code contract:
 
 * `0` means the command completed successfully.
-* `1` means an error occurred. Errors are printed as a single red line, never as a raw Python traceback.
+* `1` means an operational failure. Authentication failures, sync errors, and other runtime problems are caught and printed as a single red line of the form `Authentication Failed: <detail>` or `tidal-sync could not complete: <detail>`.
+* `2` means a usage error. Typer/Click rejects problems such as a missing import path, an unrecognised `clear` target, or an unknown command before any work begins and exits with this Click usage-error code.
 
-You will never see an uncaught stack trace. Authentication failures and operational failures are caught and reported as one formatted line, then the process exits with code `1`.
+Stack traces are unusual during normal operation because the expected failure paths above are caught and printed on one line. An uncaught traceback can still surface from an unforeseen bug; treat it as a defect worth reporting rather than something the CLI promises to suppress.
 
 ## Commands
 
@@ -197,6 +198,8 @@ tidal-sync clear playlists -p target
 
 **Reads and writes**
 Reads: the session token for the selected profile. Writes: audit logs under `./import_reports`. With a real run it deletes the requested category from the Tidal account; with `--dry-run` it writes nothing to the account.
+
+Note: the clear audit log is currently routed to the same `./import_reports` directory as the import audit log. The path is correct as documented but mixes destructive and import telemetry in one folder; routing it under a distinct `clear` directory would be cleaner. Tracked as a code-level follow-up.
 
 ---
 

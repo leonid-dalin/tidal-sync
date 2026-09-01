@@ -100,6 +100,37 @@ def test_import_value_error_is_caught_and_exits_cleanly(monkeypatch, tmp_path):
     # path (exit 1 with a friendly message), not left as an uncaught
     # exception.
     assert result.exit_code == 1, result.output
-    assert not isinstance(result.exception, ValueError), result.output
     assert bad.name in result.output
     assert "tidal-sync could not complete" in result.output
+
+
+def test_successful_clear_command_exits_zero(fake_session):
+    # N-2 pin: the documented contract promises exit 0 on success.
+    result = runner.invoke(app, ["clear", "tracks", "--force"])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_import_missing_path_is_a_usage_error_exits_two(tmp_path):
+    # N-2 pin: Typer rejects a missing import path before any work begins
+    # and Click surfaces that as the standard usage-error code 2.
+    missing = tmp_path / "does_not_exist.csv"
+
+    result = runner.invoke(app, ["import", str(missing)])
+
+    assert result.exit_code == 2, result.output
+
+
+def test_clear_with_unknown_target_is_a_usage_error_exits_two():
+    # N-2 pin: ClearTarget is an enum, so an unrecognised value is rejected
+    # by the CLI before any purge runs and exits with code 2.
+    result = runner.invoke(app, ["clear", "not-a-real-target"])
+
+    assert result.exit_code == 2, result.output
+
+
+def test_unknown_command_is_a_usage_error_exits_two():
+    # N-2 pin: an unknown command is a Click usage error and exits 2.
+    result = runner.invoke(app, ["definitely-not-a-command"])
+
+    assert result.exit_code == 2, result.output

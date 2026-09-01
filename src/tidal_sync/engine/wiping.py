@@ -10,6 +10,7 @@ are properly eradicated.
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 import requests
@@ -25,7 +26,23 @@ from .workers import run_headless_tasks_async
 console = Console()
 
 
-async def _purge_v2_folders_async(session: tidalapi.Session) -> None:
+@dataclass
+class PurgeReport:
+    """Outcome of a destructive purge. Every item is accounted for."""
+
+    requested: int = 0
+    deleted: int = 0
+    failed: int = 0
+    failures: list[str] = field(default_factory=list)
+
+    def record_failure(self, detail: str) -> None:
+        self.failed += 1
+        # Bounded so a 10k-item wipe does not buffer 10k strings.
+        if len(self.failures) < 50:
+            self.failures.append(detail)
+
+
+async def _purge_v2_folders_async(session: tidalapi.Session, report: PurgeReport) -> None:
     """
     Identifies and deletes all V2 playlist folders associated with the user.
 
@@ -44,7 +61,13 @@ async def _purge_v2_folders_async(session: tidalapi.Session) -> None:
     base_v2_url = "https://api.tidal.com/v2"
     folders_to_delete = []
 
-    headers = {"Authorization": f"Bearer {session.access_token}", "Accept": "application/json"}
+    def _auth_headers() -> dict[str, str]:
+        # Rebuilt per request: a long wipe outlives the access token, and a
+        # stale Bearer token turns every later request into a swallowed 401.
+        return {
+            "Authorization": f"Bearer {session.access_token}",
+            "Accept": "application/json",
+        }
 
     # 1. Fetch all existing folders (Bypassing tidalapi entirely)
     offset = 0
@@ -58,7 +81,7 @@ async def _purge_v2_folders_async(session: tidalapi.Session) -> None:
                 return requests.get(
                     f"{base_v2_url}/my-collection/playlists/folders/flattened",
                     params=params,
-                    headers=headers,
+                    headers=_auth_headers(),
                 )
 
             res = await asyncio.to_thread(_fetch_folders)
@@ -97,8 +120,7 @@ async def _purge_v2_folders_async(session: tidalapi.Session) -> None:
         delete_params = base_params.copy()
         delete_params["trns"] = f"trn:folder:{folder_id}"
 
-        del_headers = headers.copy()
-        del_headers["Content-Type"] = "application/json"
+        del_headers = {**_auth_headers(), "Content-Type": "application/json"}
 
         def _execute_remove():
             return requests.put(
@@ -111,9 +133,15 @@ async def _purge_v2_folders_async(session: tidalapi.Session) -> None:
         try:
             res = await asyncio.to_thread(_execute_remove)
             if not res.ok:
-                logger.debug(f"Folder deletion failed for {folder_id}. HTTP {res.status_code}")
+                detail = f"folder {folder_id}: HTTP {res.status_code}"
+                logger.warning("Folder deletion failed: {detail}", detail=detail)
+                report.record_failure(detail)
+            else:
+                report.deleted += 1
         except Exception as e:
-            logger.debug(f"Silently bypassed folder deletion error: {e}")
+            detail = f"folder {folder_id}: {e}"
+            logger.warning("Folder deletion error: {detail}", detail=detail)
+            report.record_failure(detail)
 
     async def _async_wrapper(f_id: str):
         await _delete_folder(f_id)
@@ -121,21 +149,33 @@ async def _purge_v2_folders_async(session: tidalapi.Session) -> None:
     await run_headless_tasks_async(folders_to_delete, _async_wrapper)
 
 
-async def purge_target_category_async(session: tidalapi.Session, target: ClearTarget) -> None:
+async def purge_target_category_async(
+    session: tidalapi.Session,
+    target: ClearTarget,
+    dry_run: bool = False,
+) -> PurgeReport:
     """
     Destructively removes items from a user's Tidal account based on the selected target.
 
     Executes concurrent deletion requests across the designated category (e.g., tracks,
-    albums, playlists). Errors such as HTTP 404s or 500s are intentionally absorbed
-    to prevent isolated server faults from halting the entire batch deletion process.
+    albums, playlists). A failure is counted and reported rather than absorbed: a wipe
+    that reports success while deleting nothing is worse than no wipe at all.
 
     Args:
         session (tidalapi.Session): The active, authenticated Tidal session.
         target (ClearTarget): The specific library segment to wipe.
+        dry_run: When set, count what would be removed without deleting.
+
+    Returns:
+        PurgeReport: The counts of what was requested, deleted and failed.
     """
     user = cast(TidalUser, cast(object, session.user))
-    if not hasattr(user, "favorites"):
-        return
+    report = PurgeReport()
+
+    if dry_run:
+        console.print("[yellow]--dry-run: no changes will be made.[/yellow]")
+
+    favorites_available = hasattr(user, "favorites")
 
     async def _clear_category_async(
         items: list[Any],
@@ -145,13 +185,23 @@ async def purge_target_category_async(session: tidalapi.Session, target: ClearTa
         if not items:
             return
 
+        report.requested += len(items)
         console.print(f"[cyan]Removing {len(items)} {category_name}...[/cyan]")
+
+        if dry_run:
+            return
 
         async def _async_wrapper(item: Any):
             try:
                 await execute_network(sync_action_factory(item))
+                report.deleted += 1
             except Exception as e:
-                logger.debug(f"Silently bypassed deletion error for item: {e}")
+                report.record_failure(f"{category_name}: {e}")
+                logger.warning(
+                    "Deletion failed for {category}: {error}",
+                    category=category_name,
+                    error=str(e),
+                )
 
         await run_headless_tasks_async(items, _async_wrapper)
 
@@ -160,10 +210,19 @@ async def purge_target_category_async(session: tidalapi.Session, target: ClearTa
         playlists = await fetch_all_async(user.playlists)
         await _clear_category_async(playlists, lambda p: p.delete, "playlists")
 
-        # Purge empty folders after the playlists have been removed
-        await _purge_v2_folders_async(session)
+        if not dry_run:
+            await _purge_v2_folders_async(session, report)
 
-    # 2. Clear Tracks
+    if not favorites_available:
+        if target in (
+            ClearTarget.TRACKS,
+            ClearTarget.ALBUMS,
+            ClearTarget.ARTISTS,
+            ClearTarget.ALL,
+        ):
+            console.print("[yellow]This account does not expose a favorites collection.[/yellow]")
+        return report
+
     if target in (ClearTarget.ALL, ClearTarget.TRACKS):
         tracks = await fetch_all_async(user.favorites.tracks)
         await _clear_category_async(
@@ -195,6 +254,7 @@ async def purge_target_category_async(session: tidalapi.Session, target: ClearTa
 
                 await _clear_category_async(blocked, _unblock_factory, "blocked artists")
         except Exception as e:
-            logger.warning(f"Failed to clear blocked artists: {e}")
+            report.record_failure(f"blocked artists: {e}")
+            logger.warning("Failed to clear blocked artists: {error}", error=str(e))
 
-    console.print(f"[bold green]Successfully cleared '{target.value}' from library.[/bold green]")
+    return report

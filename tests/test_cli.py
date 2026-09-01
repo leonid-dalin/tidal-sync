@@ -1,8 +1,8 @@
 """End-to-end CLI behaviour through typer's runner.
 
-Unit tests reach the engine functions directly, so they cannot see
-whether the confirmation happens before authentication, or whether a
-declined prompt leaves the account untouched.
+Unit tests reach the engine functions directly, so they cannot see the
+confirmation ordering, whether the account id is shown, or whether a
+mismatched confirmation leaves the account untouched.
 """
 
 import pytest
@@ -14,6 +14,10 @@ from tidal_sync.cli import app
 runner = CliRunner()
 
 
+class FakeSession:
+    id = 4242
+
+
 @pytest.fixture
 def fake_session(monkeypatch):
     """Replaces authentication so a test never touches the network."""
@@ -22,40 +26,56 @@ def fake_session(monkeypatch):
 
     def _get_session(profile="default"):
         calls.append(profile)
-        return object()
+        return type("S", (), {"user": FakeSession()})()
 
-    async def _purge(session, target):
-        calls.append(f"purge:{target}")
+    async def _purge(session, target, dry_run=False):
+        calls.append(f"purge:{target}:dry_run={dry_run}")
+        return type("R", (), {"requested": 2, "deleted": 2, "failed": 0, "failures": []})()
 
     monkeypatch.setattr(cli_module, "get_session", _get_session)
     monkeypatch.setattr(cli_module, "purge_target_category_async", _purge)
     return calls
 
 
-def test_declined_confirmation_never_authenticates(fake_session):
-    result = runner.invoke(app, ["clear", "tracks"], input="n\n")
+def test_mismatched_confirmation_never_purges(fake_session):
+    result = runner.invoke(app, ["clear", "tracks"], input="wrong\n")
 
-    assert "sure" in result.output.lower()
-    assert fake_session == [], "a declined prompt must not reach the network"
+    assert "Confirmation did not match" in result.output
+    assert not any(str(c).startswith("purge:") for c in fake_session)
+
+
+def test_matching_confirmation_purges(fake_session):
+    result = runner.invoke(app, ["clear", "tracks"], input="default\n")
+
+    assert result.exit_code == 0, result.output
+    assert any(str(c).startswith("purge:tracks") for c in fake_session)
 
 
 def test_force_skips_the_prompt_and_clears(fake_session):
     result = runner.invoke(app, ["clear", "tracks", "--force"])
 
     assert result.exit_code == 0, result.output
-    assert fake_session == ["default", "purge:tracks"]
+    assert any(str(c).startswith("purge:tracks") for c in fake_session)
 
 
-def test_confirmation_precedes_authentication(fake_session):
-    runner.invoke(app, ["clear", "tracks"], input="y\n")
+def test_account_id_is_shown_before_the_prompt(fake_session):
+    result = runner.invoke(app, ["clear", "tracks"], input="wrong\n")
 
-    # The prompt is an interactive gate, so a session must not exist yet
-    # when it is shown. Ordering is the whole point of F9.
-    assert fake_session, "the purge should run once confirmed"
-    assert fake_session[0] == "default", "authentication happens after the prompt"
+    # F9: the operator must be told which account they are destroying
+    # before they confirm, and that requires authenticating first.
+    assert "4242" in result.output
+    assert "About to permanently delete" in result.output
 
 
 def test_profile_name_appears_in_the_prompt(fake_session):
-    result = runner.invoke(app, ["clear", "tracks", "--profile", "second"], input="n\n")
+    result = runner.invoke(app, ["clear", "tracks", "--profile", "second"], input="wrong\n")
 
     assert "second" in result.output
+
+
+def test_dry_run_reports_counts_without_deleting(fake_session):
+    result = runner.invoke(app, ["clear", "tracks", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "Dry run" in result.output
+    assert any("dry_run=True" in str(c) for c in fake_session)

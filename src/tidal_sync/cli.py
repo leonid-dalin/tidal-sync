@@ -158,31 +158,50 @@ def clear(
         str, typer.Option("--profile", "-p", help="Which account profile to clear")
     ] = "default",
     force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt")] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Report counts without deleting")
+    ] = False,
 ) -> None:
     """
-    Destructively removes a specific category of data from a Tidal account.
+    Destructively removes a category of data from a Tidal account.
 
-    Provides a manual confirmation prompt unless the `--force` flag is used.
     This action is irreversible.
-
-    Args:
-        target (ClearTarget): The category to wipe (e.g., 'all', 'tracks').
-        profile (str): The authentication profile to clear.
-        force (bool): Skips the manual safety confirmation. Defaults to False.
     """
-    if not force:
-        typer.confirm(
-            f"Are you absolutely sure you want to permanently delete {target} "
-            f"from the '{profile}' profile?",
-            abort=True,
-        )
-
+    # Authenticate first so the prompt can name the account being destroyed.
     try:
         session = get_session(profile)
-        asyncio.run(purge_target_category_async(session, target))
     except TidalAuthenticationError as e:
         console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
         raise typer.Exit(1) from e
+
+    user_id = getattr(getattr(session, "user", None), "id", "unknown")
+    console.print(
+        f"[bold red]About to permanently delete {target} from Tidal account "
+        f"{user_id} (profile '{profile}').[/bold red]"
+    )
+
+    if not force and not dry_run:
+        typed = typer.prompt(f"Type '{profile}' to confirm irreversible deletion of {target}")
+        if typed != profile:
+            console.print("[red]Confirmation did not match. Aborting.[/red]")
+            raise typer.Abort()
+
+    report = asyncio.run(purge_target_category_async(session, target, dry_run=dry_run))
+
+    if dry_run:
+        console.print(f"[yellow]Dry run: would attempt {report.requested} deletions.[/yellow]")
+        return
+
+    console.print(f"  Deleted: {report.deleted}")
+    if report.failed:
+        console.print(f"  [red]Failed: {report.failed}[/red]")
+        for detail in report.failures[:10]:
+            console.print(f"    [dim]{detail}[/dim]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"[bold green]Successfully cleared '{target.value}' ({report.deleted} items).[/bold green]"
+    )
 
 
 @app.command(name="profiles")

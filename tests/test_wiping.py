@@ -4,10 +4,9 @@ Deletion errors were logged at DEBUG with no audit sink configured, so a
 wipe that deleted nothing still reported success.
 """
 
-import pytest
 
 from tidal_sync.domain.enums import ClearTarget
-from tidal_sync.engine.wiping import PurgeReport, purge_target_category_async
+from tidal_sync.engine.wiping import purge_target_category_async
 
 
 class Track:

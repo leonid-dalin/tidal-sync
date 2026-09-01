@@ -53,13 +53,17 @@ The domain layer enforces type safety, validates external data, and manages tele
 Uses Pydantic to sanitise legacy Exportify or TuneMyMusic CSV formats into standardised models (`TrackRow`, `AlbumRow`). It drops malformed rows and computes fallback text queries when direct database IDs are missing from the source files.
 
 ### `protocols.py` (Structural Typing)
-Defines structural `Protocol` classes for external `tidalapi` objects (like `TidalTrack` and `TidalPlaylist`). This maintains strict static analysis boundaries and eliminates wildcard `Any` casts without relying on unmaintained third-party type stubs.
+Defines structural `Protocol` classes for external `tidalapi` objects (currently `TidalUser`). This maintains strict static analysis boundaries and eliminates wildcard `Any` casts without relying on unmaintained third-party type stubs.
 
 ### `enums.py` (Strict Constraints)
 Stores `StrEnum` classes, such as `ClearTarget`. By tying Typer arguments directly to these enums, the CLI gets native validation and terminal autocomplete, preventing users from passing unsupported category strings.
 
 ### `exceptions.py` (Error Hierarchy)
 Defines the custom domain exceptions (`TidalSyncError`, `TidalAuthenticationError`). This allows the core logic to raise specific, expected errors that the CLI layer can catch and format neatly, rather than relying on abrupt `SystemExit` calls.
+
+## Infrastructure Layer (`/infrastructure/`)
+
+Cross-cutting concerns that are not domain logic and not engine flow.
 
 ### `logger.py` (Telemetry)
 Manages high-speed, thread-safe JSONL telemetry using loguru and `orjson`. 

@@ -10,7 +10,7 @@ dependencies = [
     "typer>=0.12.1",
     "pydantic>=2.12.2",
     "rich>=14.2.0",
-    "requests==2.33.1",
+    "requests>=2.32.0",
     "orjson>=3.11.9",
     "loguru>=0.7.3",
 ]

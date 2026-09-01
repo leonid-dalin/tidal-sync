@@ -246,9 +246,17 @@ async def export_algorithmic_mixes_to_disk(session: tidalapi.Session, base_dir: 
             if fetch_target is None and type(station).__name__ == "MixV2":
 
                 def _get_v2_items(st=station):
-                    if not getattr(st, "_retrieved", False):
-                        st.get()
-                    return getattr(st, "_items", []) or []
+                    try:
+                        if not getattr(st, "_retrieved", False):
+                            st.get()
+                        return getattr(st, "_items", []) or []
+                    except AttributeError:
+                        # tidalapi stopped exposing these private attributes;
+                        # skip rather than crash the whole export.
+                        logger.debug(
+                            "MixV2 station {name} missing private state", name=station_name
+                        )
+                        return []
 
                 fetch_target = _get_v2_items
 

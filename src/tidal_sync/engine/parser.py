@@ -10,6 +10,7 @@ engine.
 
 import csv
 import io
+import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -39,13 +40,35 @@ def sanitize_filename(name: str) -> str:
     return re.sub(r'[<>:"/\\|?*]', "_", name).strip()
 
 
-def write_albums_csv_sync(file_path: Path, albums: list[Any]) -> None:
-    """Synchronous I/O bound CSV writer for albums."""
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(file_path, mode="w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        writer.writerow(["album_name", "artist_name", "tidal_id"])
+def _atomic_write_csv(file_path: Path, write_rows) -> int:
+    """Writes a CSV atomically and returns the number of data rows written.
 
+    The file is built under a .part sibling and only moved into place once
+    the content is fully written and flushed. A crash mid-write therefore
+    leaves any previous backup untouched instead of a truncated one.
+    """
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = file_path.with_name(file_path.name + ".part")
+
+    try:
+        with open(temp_path, mode="w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            rows = write_rows(writer)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, file_path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+    return rows
+
+
+def write_albums_csv_sync(file_path: Path, albums: list[Any]) -> int:
+    """Synchronous I/O bound CSV writer for albums. Returns rows written."""
+
+    def _rows(writer):
+        writer.writerow(["album_name", "artist_name", "tidal_id"])
         for album in albums:
             artist_name = getattr(getattr(album, "artist", None), "name", "Unknown")
             writer.writerow(
@@ -55,15 +78,16 @@ def write_albums_csv_sync(file_path: Path, albums: list[Any]) -> None:
                     str(getattr(album, "id", "")),
                 ]
             )
+        return len(albums)
+
+    return _atomic_write_csv(file_path, _rows)
 
 
-def write_artists_csv_sync(file_path: Path, artists: list[Any]) -> None:
-    """Synchronous I/O bound CSV writer for artists."""
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(file_path, mode="w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
+def write_artists_csv_sync(file_path: Path, artists: list[Any]) -> int:
+    """Synchronous I/O bound CSV writer for artists. Returns rows written."""
+
+    def _rows(writer):
         writer.writerow(["artist_name", "tidal_id"])
-
         for artist in artists:
             writer.writerow(
                 [
@@ -71,20 +95,23 @@ def write_artists_csv_sync(file_path: Path, artists: list[Any]) -> None:
                     str(getattr(artist, "id", "")),
                 ]
             )
+        return len(artists)
+
+    return _atomic_write_csv(file_path, _rows)
 
 
-def write_tracks_csv_sync(file_path: Path, tracks: Sequence[Any]) -> None:
+def write_tracks_csv_sync(file_path: Path, tracks: Sequence[Any]) -> int:
     """
-    Synchronous I/O bound CSV writer.
-    Designed to be offloaded to a thread pool to avoid blocking the async event loop.
+    Synchronous I/O bound CSV writer. Returns rows written.
+
+    Designed to be offloaded to a thread pool to avoid blocking the async
+    event loop.
     """
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(file_path, mode="w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
+
+    def _rows(writer):
         writer.writerow(["track_name", "artist_name", "album_name", "isrc", "tidal_id"])
-
         for track in tracks:
-            # Safely chain getattr to prevent crashes if metadata is missing/malformed
+            # Chain getattr so missing metadata cannot abort a whole backup.
             artist_name = getattr(getattr(track, "artist", None), "name", "Unknown")
             album_name = getattr(getattr(track, "album", None), "name", "Unknown")
 
@@ -97,6 +124,9 @@ def write_tracks_csv_sync(file_path: Path, tracks: Sequence[Any]) -> None:
                     str(getattr(track, "id", "")),
                 ]
             )
+        return len(tracks)
+
+    return _atomic_write_csv(file_path, _rows)
 
 
 def _clean_row(row: dict[Any, Any]) -> dict[str, Any]:

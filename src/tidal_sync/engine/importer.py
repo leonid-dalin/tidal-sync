@@ -8,7 +8,6 @@ fallbacks, and orchestrates the upload queues.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -21,10 +20,10 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn
 from ..domain.logger import setup_audit_logging
 from ..domain.models import AlbumRow, TrackRow
 from ..domain.protocols import CHUNK_SIZE, TidalUser
-from .bisection import upload_batch_with_bisection_recovery
 from .folders import assign_playlist_to_v2_folder, ensure_v2_folder_exists
 from .network import execute_network, fetch_all_async
 from .parser import parse_csv
+from .upload_recovery import upload_batch_with_recovery
 from .workers import ImportStats, handle_match_result_async, run_matching_tasks_async
 
 console = Console()
@@ -317,19 +316,6 @@ async def import_tracks_category_async(
             console.print(f"[yellow]No destination for '{dest_name}'; nothing uploaded.[/yellow]")
             return
 
-        # Task 13 rewrites the recovery path to consume UploadOutcome. Until
-        # then it is typed as returning None, so the adapter keeps the
-        # rejection visible to this loop instead of the callback contract.
-        last_outcome: UploadOutcome | None = None
-        callback: Callable[[list[str]], Awaitable[None]]
-
-        async def _upload_chunk_async(batch: list[str]) -> UploadOutcome:
-            nonlocal last_outcome
-            last_outcome = await upload_chunk(batch)
-            return last_outcome
-
-        callback = cast("Callable[[list[str]], Awaitable[None]]", _upload_chunk_async)
-
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -342,36 +328,15 @@ async def import_tracks_category_async(
             for i in range(0, len(track_ids_to_add), CHUNK_SIZE):
                 chunk = track_ids_to_add[i : i + CHUNK_SIZE]
 
-                await upload_batch_with_bisection_recovery(
+                await upload_batch_with_recovery(
                     chunk,
-                    callback,
+                    upload_chunk,
                     stats,
                     staged_tracks_map,
                     str(dest_name),
                     progress_ui,
                     add_task,
                 )
-
-                # The recovery path counts a whole chunk as added when no
-                # exception escapes. Tidal answers 200 while silently skipping
-                # tracks it will not accept, so reconcile against what came
-                # back and report the difference instead of over-counting.
-                if last_outcome is not None and last_outcome.rejected:
-                    overcounted = min(len(last_outcome.rejected), stats.added)
-                    stats.added -= overcounted
-                    stats.failed += len(last_outcome.rejected)
-                    for tid in last_outcome.rejected:
-                        track = staged_tracks_map.get(str(tid))
-                        logger.bind(audit=True).warning(
-                            "Dropped Track (Region Locked)",
-                            type="Track",
-                            id=tid,
-                            track=getattr(track, "track_name", "Unknown"),
-                            artist=getattr(track, "artist_name", "Unknown"),
-                            source=file_path.name,
-                            dest=str(dest_name),
-                        )
-                    last_outcome = None
 
     console.print(
         f"[green]✓ '{dest_name}' complete:[/green] "

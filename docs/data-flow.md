@@ -32,16 +32,14 @@ Once all tracks are matched, the tool moves to the upload phase. The `tidalapi` 
 
 The tool slices the `track_ids_to_add` list into arrays of 50 (`CHUNK_SIZE`). It passes these chunks to either `user.favorites.add_track(batch)` or `playlist.add(batch)`. The `tidalapi` formats these lists into a comma-separated string and executes a single POST request per chunk.
 
-## 4. Recursive bisection (Fault recovery)
+## 4. Upload recovery (Fault recovery)
 
-Tidal occasionally region-locks specific tracks. If a single track within a 50-item chunk is geographically locked, Tidal rejects the entire POST request with an `HTTPError` or `ObjectNotFound` exception. 
+Tidal rejects an entire chunk if one track in it is region-locked or removed, and it also answers 200 while silently skipping tracks it will not accept. `upload_batch_with_recovery` (in `engine/upload_recovery.py`) handles both cases:
 
-Instead of failing the whole batch, the `upload_batch_with_bisection_recovery` function (located in `engine/bisection.py`) intercepts the exception and applies a recursive bisection algorithm:
-1. It splits the rejected 50-item chunk into two 25-item chunks.
-2. It attempts to upload both halves. 
-3. The half containing the locked track fails again, triggering another split, while the clean half uploads successfully.
-4. This recursion continues until the chunk size is exactly 1. 
-5. The tool identifies the single locked "poison" track, drops it from the import, and logs it as a failure.
+1. It uploads the chunk and reads the `UploadOutcome`. Tracks Tidal rejected server-side are dropped directly, because Tidal has already named them.
+2. If the whole chunk is refused with an exception, it classifies the error by status: a 412 (version collision) is retried once, retryable server errors (500/502/503/504) are retried, and auth or rate-limit errors propagate.
+3. Only a true poison status (403/404) or `ObjectNotFound` triggers a per-item scan: each track is retried alone and dropped if it still fails, so the rest of the batch uploads.
+4. The isolated track is logged as "Dropped Track (Region Locked)" and the rest of the batch completes.
 
 ## 5. Telemetry and audit logging
 

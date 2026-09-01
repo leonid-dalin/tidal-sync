@@ -30,8 +30,8 @@ Handles network fetching, captures point-in-time snapshots of dynamic algorithmi
 ### `wiping.py`
 Manages destructive account clears via headless worker groups. It safely absorbs isolated 404/500 errors and uses raw HTTP bypasses to eradicate undocumented V2 ghost folders left behind by standard playlist deletion.
 
-### `bisection.py`
-Contains the recursive bisection algorithm used during batch uploads. Tidal fails entire batch uploads if a single track is geographically locked; this module catches the failure, splits the array in half, and retries both halves recursively to isolate and drop the poison track without halting the job.
+### `upload_recovery.py`
+Isolates tracks Tidal refuses to accept during a batch upload. The module uploads a chunk, reads the `UploadOutcome` to drop tracks Tidal rejected server-side, and falls back to a per-item scan only when the whole chunk is refused. Auth, rate-limit, and server errors propagate rather than being blamed on a track.
 
 ### `folders.py`
 Provides raw HTTP interventions (mimicking browser/web-player headers) to manage V2 API folder creation, assignment, and fetching. This prevents JSON decoding crashes triggered when the standard `tidalapi` wrapper hits empty success response bodies.

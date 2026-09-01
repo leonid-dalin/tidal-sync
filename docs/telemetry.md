@@ -36,8 +36,8 @@ The audit logger is bound specifically to the import engine using `logger.bind(a
 * **Skipped (Duplicate):** A track was matched, but the tool detected it already exists in the target playlist or your liked songs.
 * **Failed (Not Found):** The tool could not find a match using the Tidal ID, the ISRC code, or the fallback text search. The log records the specific failure reason (e.g., "ISRC mismatch & Text fallback failed").
 * **Item Added:** The track successfully uploaded to the Tidal server.
-* **Chunk rejected:** A batch upload failed (usually due to a region-locked track), triggering the bisection algorithm.
-* **Dropped Track:** The specific region-locked track isolated by the bisection algorithm that was dropped so the rest of the batch could succeed. The log records the exact track name and artist for manual recovery.
+* **Chunk rejected:** A batch upload failed (usually due to a region-locked track), triggering the per-item recovery scan.
+* **Dropped Track:** The specific region-locked track isolated so the rest of the batch could succeed. The log records the exact track name and artist for manual recovery.
 
 ## Example Output
 

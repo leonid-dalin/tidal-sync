@@ -12,7 +12,7 @@ MODULES = (
     "tidal_sync.engine.folders",
     "tidal_sync.engine.parser",
     "tidal_sync.engine.workers",
-    "tidal_sync.engine.bisection",
+    "tidal_sync.engine.upload_recovery",
 )
 
 

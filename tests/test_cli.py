@@ -10,7 +10,6 @@ from typer.testing import CliRunner
 
 from tidal_sync import cli as cli_module
 from tidal_sync.cli import app
-from tidal_sync.domain.exceptions import BackupFileError
 
 runner = CliRunner()
 
@@ -85,18 +84,15 @@ def test_dry_run_reports_counts_without_deleting(fake_session):
 def test_import_value_error_is_caught_and_exits_cleanly(monkeypatch, tmp_path):
     # MAJ-1: parse_csv raises BackupFileError on an all-invalid CSV; the
     # single-file branch must catch it as TidalSyncError and exit 1, not
-    # blow up.
+    # blow up. Exercise the real parse_csv path by feeding it a CSV with
+    # no valid header rows rather than faking the call.
     bad = tmp_path / "file.csv"
     bad.write_text("garbage\n")
 
     def _get_session(profile="default"):
         return type("S", (), {"user": FakeUser()})()
 
-    def _boom(session, target_path, target_playlist_name=None):
-        raise BackupFileError(f"no valid rows in {target_path.name}")
-
     monkeypatch.setattr(cli_module, "get_session", _get_session)
-    monkeypatch.setattr(cli_module, "import_collection_from_disk", _boom)
 
     result = runner.invoke(app, ["import", str(bad)])
 

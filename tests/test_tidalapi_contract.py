@@ -64,6 +64,7 @@ def test_user_create_playlist_shape():
     and any fake must expose that signature, returning a playlist-like object
     with an id. A drift in tidalapi's user API breaks here first.
     """
+
     class FakePlaylist:
         id = "pl.123"
 

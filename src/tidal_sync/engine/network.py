@@ -282,6 +282,7 @@ def fetch_blocked_artists(session: tidalapi.Session) -> list[Any]:
     items = []
     offset = 0
     limit = 50
+    last_chunk_ids: list[Any] = []
 
     while True:
         params = {"limit": limit, "offset": offset}
@@ -296,7 +297,13 @@ def fetch_blocked_artists(session: tidalapi.Session) -> list[Any]:
         if not chunk:
             break
 
+        # Infinite loop guard: detects if the API ignores the offset and repeats pages
+        current_chunk_ids = [getattr(item, "id", id(item)) for item in chunk]
+        if offset > 0 and current_chunk_ids == last_chunk_ids:
+            break
+
         items.extend(chunk)
+        last_chunk_ids = current_chunk_ids
         offset += limit
 
     return items

@@ -203,195 +203,81 @@ Note: the clear audit log is currently routed to the same `./import_reports` dir
 
 ---
 
-### `like-tracks`
+### `like`
 
 **Synopsis**
 ```bash
-tidal-sync like-tracks <ids>... [--profile NAME] [-p NAME]
+tidal-sync like <kind> <ids>... [--profile NAME] [-p NAME]
 ```
 
 **Description**
-Likes one or more tracks on the named profile. Each id is sent on its own request, so the command reports exactly which track failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/track/<id>`); anything unparseable is rejected before any request goes out.
+Likes one or more items on the named profile. The kind is a required argument taken from the `FavoriteKind` enum, so only the values below are accepted; anything else (including `playlist`) is rejected by Typer before any request goes out as a usage error.
 
 **Arguments**
 
-* `ids` (required, one or more): One or more track ids or Tidal share URLs.
+* `kind` (required): The kind of favourite to add. Must be one of the `FavoriteKind` enum values:
+  * `track` - liked tracks
+  * `artist` - followed artists
+  * `album` - saved albums
+* `ids` (required, one or more): One or more ids or Tidal share URLs. Bare numeric strings and Tidal share URLs (`/track/<id>`, `/artist/<id>`, `/album/<id>`) are accepted; anything unparseable is rejected before any request goes out.
 
 **Options**
 
 * `--profile`, `-p` NAME: Which account profile to like into. Default: `default`.
 
-**Example**
+**Examples**
 ```bash
 # Like three tracks on the default account
-tidal-sync like-tracks 20019287 19782830 19781477
+tidal-sync like track 20019287 19782830 19781477
 
-# Like a track parsed from a share URL on a named account
-tidal-sync like-tracks https://listen.tidal.com/track/20019287 -p target
+# Follow two artists on a named account
+tidal-sync like artist 4894212 8107285 -p target
+
+# Save three albums parsed from share URLs
+tidal-sync like album https://listen.tidal.com/album/20019282 https://tidal.com/album/19781468 19782820
 ```
 
 **Reads and writes**
-Reads: the session token for the selected profile. Writes: nothing on disk; new favourites appear on the Tidal account for the selected profile.
+Reads: the session token for the selected profile. Writes: nothing on disk; the named items appear as favourites on the Tidal account for the selected profile.
 
 ---
 
-### `like-artists`
+### `unlike`
 
 **Synopsis**
 ```bash
-tidal-sync like-artists <ids>... [--profile NAME] [-p NAME]
+tidal-sync unlike <kind> <ids>... [--profile NAME] [-p NAME]
 ```
 
 **Description**
-Likes one or more artists on the named profile. Each id is sent on its own request, so the command reports exactly which artist failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/artist/<id>`); anything unparseable is rejected before any request goes out.
+Removes one or more items from the favourites on the named profile. The kind is a required argument taken from the `FavoriteKind` enum, so only the values below are accepted; anything else is rejected by Typer before any request goes out as a usage error.
 
 **Arguments**
 
-* `ids` (required, one or more): One or more artist ids or Tidal share URLs.
-
-**Options**
-
-* `--profile`, `-p` NAME: Which account profile to like into. Default: `default`.
-
-**Example**
-```bash
-# Follow two artists on the default account
-tidal-sync like-artists 4894212 8107285
-
-# Follow an artist from a share URL on a named account
-tidal-sync like-artists https://tidal.com/artist/4894212 -p source
-```
-
-**Reads and writes**
-Reads: the session token for the selected profile. Writes: nothing on disk; new favourites appear on the Tidal account for the selected profile.
-
----
-
-### `like-albums`
-
-**Synopsis**
-```bash
-tidal-sync like-albums <ids>... [--profile NAME] [-p NAME]
-```
-
-**Description**
-Likes one or more albums on the named profile. Each id is sent on its own request, so the command reports exactly which album failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/album/<id>`); anything unparseable is rejected before any request goes out.
-
-**Arguments**
-
-* `ids` (required, one or more): One or more album ids or Tidal share URLs.
-
-**Options**
-
-* `--profile`, `-p` NAME: Which account profile to like into. Default: `default`.
-
-**Example**
-```bash
-# Save three albums on the default account
-tidal-sync like-albums 20019282 19781468 19782820
-
-# Save an album from a share URL on a named account
-tidal-sync like-albums https://listen.tidal.com/album/20019282 -p target
-```
-
-**Reads and writes**
-Reads: the session token for the selected profile. Writes: nothing on disk; new favourites appear on the Tidal account for the selected profile.
-
----
-
-### `unlike-tracks`
-
-**Synopsis**
-```bash
-tidal-sync unlike-tracks <ids>... [--profile NAME] [-p NAME]
-```
-
-**Description**
-Removes one or more tracks from the favourites on the named profile. Each id is sent on its own request, so the command reports exactly which track failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/track/<id>`); anything unparseable is rejected before any request goes out.
-
-**Arguments**
-
-* `ids` (required, one or more): One or more track ids or Tidal share URLs.
+* `kind` (required): The kind of favourite to remove. Must be one of the `FavoriteKind` enum values:
+  * `track` - liked tracks
+  * `artist` - followed artists
+  * `album` - saved albums
+* `ids` (required, one or more): One or more ids or Tidal share URLs. Bare numeric strings and Tidal share URLs are accepted; anything unparseable is rejected before any request goes out.
 
 **Options**
 
 * `--profile`, `-p` NAME: Which account profile to unlike from. Default: `default`.
 
-**Example**
+**Examples**
 ```bash
 # Remove three tracks from the default account favourites
-tidal-sync unlike-tracks 20019287 19782830 19781477
-
-# Remove a track from a named account
-tidal-sync unlike-tracks 20019287 -p target
-```
-
-**Reads and writes**
-Reads: the session token for the selected profile. Writes: nothing on disk; the named tracks disappear from the Tidal account favourites.
-
----
-
-### `unlike-artists`
-
-**Synopsis**
-```bash
-tidal-sync unlike-artists <ids>... [--profile NAME] [-p NAME]
-```
-
-**Description**
-Removes one or more artists from the followed list on the named profile. Each id is sent on its own request, so the command reports exactly which artist failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/artist/<id>`); anything unparseable is rejected before any request goes out.
-
-**Arguments**
-
-* `ids` (required, one or more): One or more artist ids or Tidal share URLs.
-
-**Options**
-
-* `--profile`, `-p` NAME: Which account profile to unlike from. Default: `default`.
-
-**Example**
-```bash
-# Unfollow two artists on the default account
-tidal-sync unlike-artists 4894212 8107285
+tidal-sync unlike track 20019287 19782830 19781477
 
 # Unfollow one artist on a named account
-tidal-sync unlike-artists 4894212 -p source
+tidal-sync unlike artist 4894212 -p source
+
+# Remove one saved album parsed from a share URL
+tidal-sync unlike album https://tidal.com/album/20019282 -p target
 ```
 
 **Reads and writes**
-Reads: the session token for the selected profile. Writes: nothing on disk; the named artists disappear from the Tidal account followed list.
-
----
-
-### `unlike-albums`
-
-**Synopsis**
-```bash
-tidal-sync unlike-albums <ids>... [--profile NAME] [-p NAME]
-```
-
-**Description**
-Removes one or more albums from the saved albums on the named profile. Each id is sent on its own request, so the command reports exactly which album failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/album/<id>`); anything unparseable is rejected before any request goes out.
-
-**Arguments**
-
-* `ids` (required, one or more): One or more album ids or Tidal share URLs.
-
-**Options**
-
-* `--profile`, `-p` NAME: Which account profile to unlike from. Default: `default`.
-
-**Example**
-```bash
-# Remove three saved albums on the default account
-tidal-sync unlike-albums 20019282 19781468 19782820
-
-# Remove one saved album on a named account
-tidal-sync unlike-albums 20019282 -p target
-```
-
-**Reads and writes**
-Reads: the session token for the selected profile. Writes: nothing on disk; the named albums disappear from the Tidal account saved albums.
+Reads: the session token for the selected profile. Writes: nothing on disk; the named items disappear from the Tidal account favourites.
 
 ---
 

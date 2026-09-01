@@ -28,6 +28,7 @@ Example:
 """
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -239,12 +240,17 @@ def clear(
 def _run_favourite_command(
     *,
     profile: str,
-    verb: Any,
     verb_name: str,
     kind: FavoriteKind,
     references: list[str],
+    verb: Any = None,
+    verb_factory: Callable[[FavoriteKind], Any] | None = None,
 ) -> None:
-    """Shared body for the six like and unlike commands.
+    """Shared body for the like and unlike commands.
+
+    The engine callable is chosen by ``kind``: ``verb_factory`` is called
+    with the enum so the lookup happens at call time and survives the
+    monkeypatch tests use to swap ``curation.like_tracks`` and friends.
 
     Resolves each reference through ``extract_tidal_id`` (bare id or share
     URL), calls the engine verb inside ``asyncio.run``, prints one rich
@@ -253,6 +259,9 @@ def _run_favourite_command(
     ``import_data`` so operators see the same one-line red message as the
     rest of the CLI.
     """
+    if verb is None:
+        assert verb_factory is not None
+        verb = verb_factory(kind)
     try:
         session = get_session(profile)
         try:
@@ -276,14 +285,16 @@ def _run_favourite_command(
         raise typer.Exit(1)
 
 
-def _like_command(verb: Any, ids: list[str], profile: str, kind: FavoriteKind) -> None:
-    _run_favourite_command(profile=profile, verb=verb, verb_name="Liked", kind=kind, references=ids)
+# Look up the engine verb by FavoriteKind at call time. The verb resolution
+# happens when the like or unlike command runs, so monkeypatching
+# curation.like_tracks (the pattern the CLI tests use) takes effect without
+# a parallel table to keep in sync.
+def _like_verb(kind: FavoriteKind) -> Any:
+    return getattr(curation, f"like_{kind.value}s")
 
 
-def _unlike_command(verb: Any, ids: list[str], profile: str, kind: FavoriteKind) -> None:
-    _run_favourite_command(
-        profile=profile, verb=verb, verb_name="Unliked", kind=kind, references=ids
-    )
+def _unlike_verb(kind: FavoriteKind) -> Any:
+    return getattr(curation, f"unlike_{kind.value}s")
 
 
 # Threshold above which `block` asks the operator to retype the profile name
@@ -378,70 +389,45 @@ def unblock(
     )
 
 
-@app.command(name="like-tracks")
-def like_tracks_cmd(
-    ids: Annotated[list[str], typer.Argument(help="One or more track ids or Tidal share URLs")],
+@app.command()
+def like(
+    kind: Annotated[FavoriteKind, typer.Argument(help="Which kind of favourite to add")],
+    ids: Annotated[list[str], typer.Argument(help="One or more ids or Tidal share URLs")],
     profile: Annotated[
         str, typer.Option("--profile", "-p", help="Which account profile to like into")
     ] = "default",
 ) -> None:
-    """Likes one or more tracks on the named profile."""
-    _like_command(curation.like_tracks, ids, profile, FavoriteKind.TRACK)
+    """Likes one or more items on the named profile.
+
+    The kind must be one of track, artist, or album; anything else is
+    rejected by Typer before any request goes out (clear <target> is the
+    same positional-enum idiom).
+    """
+    _run_favourite_command(
+        profile=profile,
+        verb_factory=_like_verb,
+        verb_name="Liked",
+        kind=kind,
+        references=ids,
+    )
 
 
-@app.command(name="like-artists")
-def like_artists_cmd(
-    ids: Annotated[list[str], typer.Argument(help="One or more artist ids or Tidal share URLs")],
-    profile: Annotated[
-        str, typer.Option("--profile", "-p", help="Which account profile to like into")
-    ] = "default",
-) -> None:
-    """Likes one or more artists on the named profile."""
-    _like_command(curation.like_artists, ids, profile, FavoriteKind.ARTIST)
-
-
-@app.command(name="like-albums")
-def like_albums_cmd(
-    ids: Annotated[list[str], typer.Argument(help="One or more album ids or Tidal share URLs")],
-    profile: Annotated[
-        str, typer.Option("--profile", "-p", help="Which account profile to like into")
-    ] = "default",
-) -> None:
-    """Likes one or more albums on the named profile."""
-    _like_command(curation.like_albums, ids, profile, FavoriteKind.ALBUM)
-
-
-@app.command(name="unlike-tracks")
-def unlike_tracks_cmd(
-    ids: Annotated[list[str], typer.Argument(help="One or more track ids or Tidal share URLs")],
+@app.command()
+def unlike(
+    kind: Annotated[FavoriteKind, typer.Argument(help="Which kind of favourite to remove")],
+    ids: Annotated[list[str], typer.Argument(help="One or more ids or Tidal share URLs")],
     profile: Annotated[
         str, typer.Option("--profile", "-p", help="Which account profile to unlike from")
     ] = "default",
 ) -> None:
-    """Unlikes one or more tracks on the named profile."""
-    _unlike_command(curation.unlike_tracks, ids, profile, FavoriteKind.TRACK)
-
-
-@app.command(name="unlike-artists")
-def unlike_artists_cmd(
-    ids: Annotated[list[str], typer.Argument(help="One or more artist ids or Tidal share URLs")],
-    profile: Annotated[
-        str, typer.Option("--profile", "-p", help="Which account profile to unlike from")
-    ] = "default",
-) -> None:
-    """Unlikes one or more artists on the named profile."""
-    _unlike_command(curation.unlike_artists, ids, profile, FavoriteKind.ARTIST)
-
-
-@app.command(name="unlike-albums")
-def unlike_albums_cmd(
-    ids: Annotated[list[str], typer.Argument(help="One or more album ids or Tidal share URLs")],
-    profile: Annotated[
-        str, typer.Option("--profile", "-p", help="Which account profile to unlike from")
-    ] = "default",
-) -> None:
-    """Unlikes one or more albums on the named profile."""
-    _unlike_command(curation.unlike_albums, ids, profile, FavoriteKind.ALBUM)
+    """Removes one or more items from the favourites on the named profile."""
+    _run_favourite_command(
+        profile=profile,
+        verb_factory=_unlike_verb,
+        verb_name="Unliked",
+        kind=kind,
+        references=ids,
+    )
 
 
 @app.command(name="profiles")

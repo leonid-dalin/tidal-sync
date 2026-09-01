@@ -2,8 +2,10 @@
 
 Engine tests in test_curation.py prove the verbs return the right
 UploadOutcome; these tests prove the CLI prints one rich line per id,
-exits 1 when any id failed, lets Typer exit 2 on an unknown command,
-and forwards --profile to the session factory.
+exits 1 when any id failed, lets Typer exit 2 on an unknown kind (so an
+operator who types 'like playlist 1' is told the kind is wrong rather
+than handed an unknown-command error), and forwards --profile to the
+session factory.
 """
 
 from typer.testing import CliRunner
@@ -23,7 +25,7 @@ def _session():
     return type("S", (), {"user": FakeUser()})()
 
 
-def test_like_tracks_prints_one_line_per_id_and_exits_zero(monkeypatch):
+def test_like_track_prints_one_line_per_id_and_exits_zero(monkeypatch):
     calls: list[tuple[str, list[str]]] = []
 
     def _get_session(profile="default"):
@@ -37,14 +39,14 @@ def test_like_tracks_prints_one_line_per_id_and_exits_zero(monkeypatch):
     monkeypatch.setattr(cli_module, "get_session", _get_session)
     monkeypatch.setattr(cli_module.curation, "like_tracks", _like_tracks)
 
-    result = runner.invoke(app, ["like-tracks", "1", "2", "3"])
+    result = runner.invoke(app, ["like", "track", "1", "2", "3"])
 
     assert result.exit_code == 0, result.output
     assert ("like_tracks", ["1", "2", "3"]) in calls
     assert "1" in result.output and "2" in result.output and "3" in result.output
 
 
-def test_like_tracks_exits_one_when_any_id_is_rejected(monkeypatch):
+def test_like_track_exits_one_when_any_id_is_rejected(monkeypatch):
     def _get_session(profile="default"):
         return _session()
 
@@ -54,28 +56,47 @@ def test_like_tracks_exits_one_when_any_id_is_rejected(monkeypatch):
     monkeypatch.setattr(cli_module, "get_session", _get_session)
     monkeypatch.setattr(cli_module.curation, "like_tracks", _like_tracks)
 
-    result = runner.invoke(app, ["like-tracks", "1", "2", "3"])
+    result = runner.invoke(app, ["like", "track", "1", "2", "3"])
 
     assert result.exit_code == 1, result.output
 
 
-def test_unknown_favourite_command_is_a_usage_error_exits_two(monkeypatch):
-    """The six commands cover every kind, so an unrecognised verb name is a
-    Typer usage error and exits 2 before any work begins.
+def test_invalid_kind_is_a_usage_error_exits_two(monkeypatch):
+    """The plan's positional <target> idiom uses FavoriteKind for Typer
+    validation, so 'like playlist 1' is rejected before the engine runs.
+    Without the enum, an unknown kind would surface as an unknown-command
+    error rather than the specific invalid-kind error this pins.
     """
 
     def _get_session(profile="default"):
         return _session()
 
-    monkeypatch.setattr(cli_module, "get_session", _get_session)
+    engine_called = False
 
-    result = runner.invoke(app, ["like-track", "1"])
+    async def _like_tracks(session, ids):
+        nonlocal engine_called
+        engine_called = True
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    monkeypatch.setattr(cli_module, "get_session", _get_session)
+    monkeypatch.setattr(cli_module.curation, "like_tracks", _like_tracks)
+
+    result = runner.invoke(app, ["like", "playlist", "1"])
 
     assert result.exit_code == 2, result.output
+    assert engine_called is False, "the engine must not run when the kind is invalid"
+    assert "like" in result.output, (
+        "the failure message must identify the 'like' command so an unknown-command "
+        "error cannot silently satisfy this case"
+    )
+    assert "Invalid value" in result.output or "playlist" in result.output, (
+        "the error must name the bad kind (Typer's invalid-enum message) rather "
+        "than a generic 'no such command' message"
+    )
 
 
 def test_profile_is_forwarded_to_get_session(monkeypatch):
-    """docs/cli-reference.md line 20 makes --profile a contract: every account
+    """docs/cli-reference.md makes --profile a contract: every account
     command must thread it through to the session factory.
     """
     captured: list[str] = []
@@ -90,13 +111,13 @@ def test_profile_is_forwarded_to_get_session(monkeypatch):
     monkeypatch.setattr(cli_module, "get_session", _get_session)
     monkeypatch.setattr(cli_module.curation, "like_tracks", _like_tracks)
 
-    result = runner.invoke(app, ["like-tracks", "1", "--profile", "second"])
+    result = runner.invoke(app, ["like", "track", "1", "--profile", "acc-b"])
 
     assert result.exit_code == 0, result.output
-    assert captured == ["second"]
+    assert captured == ["acc-b"]
 
 
-def test_like_tracks_resolves_url_references_through_extract_tidal_id(monkeypatch):
+def test_like_resolves_url_references_through_extract_tidal_id(monkeypatch):
     """Operators paste share URLs as often as bare ids, so the CLI must run
     each reference through extract_tidal_id before the engine sees it.
     """
@@ -115,7 +136,8 @@ def test_like_tracks_resolves_url_references_through_extract_tidal_id(monkeypatc
     result = runner.invoke(
         app,
         [
-            "like-tracks",
+            "like",
+            "track",
             "https://listen.tidal.com/track/12345",
             "67890",
         ],
@@ -125,7 +147,7 @@ def test_like_tracks_resolves_url_references_through_extract_tidal_id(monkeypatc
     assert received == [["12345", "67890"]]
 
 
-def test_like_tracks_rejects_an_unparseable_reference(monkeypatch):
+def test_like_rejects_an_unparseable_reference(monkeypatch):
     """extract_tidal_id raises ValueError; the CLI surfaces it as Click
     exit 2 rather than silently dropping the reference.
     """
@@ -135,12 +157,12 @@ def test_like_tracks_rejects_an_unparseable_reference(monkeypatch):
 
     monkeypatch.setattr(cli_module, "get_session", _get_session)
 
-    result = runner.invoke(app, ["like-tracks", "not-a-tidal-thing"])
+    result = runner.invoke(app, ["like", "track", "not-a-tidal-thing"])
 
     assert result.exit_code == 2, result.output
 
 
-def test_unlike_artists_exits_one_when_any_id_is_rejected(monkeypatch):
+def test_unlike_artist_exits_one_when_any_id_is_rejected(monkeypatch):
     def _get_session(profile="default"):
         return _session()
 
@@ -150,12 +172,12 @@ def test_unlike_artists_exits_one_when_any_id_is_rejected(monkeypatch):
     monkeypatch.setattr(cli_module, "get_session", _get_session)
     monkeypatch.setattr(cli_module.curation, "unlike_artists", _unlike_artists)
 
-    result = runner.invoke(app, ["unlike-artists", "9", "10"])
+    result = runner.invoke(app, ["unlike", "artist", "9", "10"])
 
     assert result.exit_code == 1, result.output
 
 
-def test_unlike_albums_forwards_profile(monkeypatch):
+def test_unlike_album_forwards_profile(monkeypatch):
     captured: list[str] = []
 
     def _get_session(profile="default"):
@@ -168,10 +190,48 @@ def test_unlike_albums_forwards_profile(monkeypatch):
     monkeypatch.setattr(cli_module, "get_session", _get_session)
     monkeypatch.setattr(cli_module.curation, "unlike_albums", _unlike_albums)
 
-    result = runner.invoke(app, ["unlike-albums", "11", "-p", "alt"])
+    result = runner.invoke(app, ["unlike", "album", "11", "-p", "alt"])
 
     assert result.exit_code == 0, result.output
     assert captured == ["alt"]
+
+
+def test_like_dispatches_by_kind_to_the_engine_verb(monkeypatch):
+    """FavoriteKind is real dispatch: 'like artist N' routes to
+    like_artists, not like_tracks. The shared body receives the verb
+    chosen by the enum.
+    """
+    seen: list[tuple[str, list[str]]] = []
+
+    def _get_session(profile="default"):
+        return _session()
+
+    async def _like_tracks(session, ids):
+        seen.append(("like_tracks", list(ids)))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    async def _like_artists(session, ids):
+        seen.append(("like_artists", list(ids)))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    async def _like_albums(session, ids):
+        seen.append(("like_albums", list(ids)))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    monkeypatch.setattr(cli_module, "get_session", _get_session)
+    monkeypatch.setattr(cli_module.curation, "like_tracks", _like_tracks)
+    monkeypatch.setattr(cli_module.curation, "like_artists", _like_artists)
+    monkeypatch.setattr(cli_module.curation, "like_albums", _like_albums)
+
+    for kind in ["track", "artist", "album"]:
+        result = runner.invoke(app, ["like", kind, "1"])
+        assert result.exit_code == 0, (kind, result.output)
+
+    assert seen == [
+        ("like_tracks", ["1"]),
+        ("like_artists", ["1"]),
+        ("like_albums", ["1"]),
+    ]
 
 
 # ---------------------------------------------------------------------------

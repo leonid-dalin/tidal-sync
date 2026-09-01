@@ -107,17 +107,17 @@ See [CLI Reference](docs/cli-reference.md) for the full command list.
 
 ## 🧹 Curation
 
-The same verbs used by `clear` work one item at a time when you want to curate by hand. Each command takes one or more ids (bare numeric strings or Tidal share URLs) and writes to the named profile:
+The same verbs used by `clear` work one item at a time when you want to curate by hand. Each command takes a kind (`track`, `artist`, or `album`) and one or more ids (bare numeric strings or Tidal share URLs) and writes to the named profile. The kind is positional and validated by Typer, so `clear <target>` and `like <kind>` share the same idiom; an unknown kind (such as `playlist`) is rejected before any request goes out.
 
 ```bash
 # Like / unlike a single track, artist or album
-tidal-sync like-tracks 20019287
-tidal-sync like-artists 4894212
-tidal-sync like-albums 20019282
+tidal-sync like track 20019287
+tidal-sync like artist 4894212
+tidal-sync like album 20019282
 
-tidal-sync unlike-tracks 20019287 -p target
-tidal-sync unlike-artists 4894212 -p source
-tidal-sync unlike-albums 20019282
+tidal-sync unlike track 20019287 -p target
+tidal-sync unlike artist 4894212 -p source
+tidal-sync unlike album 20019282
 
 # Block / unblock artists on the account
 tidal-sync block 4894212 8107285

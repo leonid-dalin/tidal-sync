@@ -42,6 +42,11 @@ from .workers import run_headless_tasks_async
 _BLOCK_METHOD = Literal["POST", "DELETE"]
 
 
+def _user(session: tidalapi.Session) -> TidalUser:
+    """Casts ``session.user`` to the engine's narrow user protocol."""
+    return cast(TidalUser, cast(object, session.user))
+
+
 async def _apply_per_id(ids: list[str], action: Callable[[str], Any], label: str) -> UploadOutcome:
     """Runs `action` once per id, concurrently, and reports each outcome.
 
@@ -84,37 +89,37 @@ async def _apply_per_id(ids: list[str], action: Callable[[str], Any], label: str
 
 async def like_tracks(session: tidalapi.Session, ids: list[str]) -> UploadOutcome:
     """Adds each track to the user's favourites."""
-    user = cast(TidalUser, cast(object, session.user))
+    user = _user(session)
     return await _apply_per_id(ids, user.favorites.add_track, "Like track")
 
 
 async def like_artists(session: tidalapi.Session, ids: list[str]) -> UploadOutcome:
     """Adds each artist to the user's favourites."""
-    user = cast(TidalUser, cast(object, session.user))
+    user = _user(session)
     return await _apply_per_id(ids, user.favorites.add_artist, "Like artist")
 
 
 async def like_albums(session: tidalapi.Session, ids: list[str]) -> UploadOutcome:
     """Adds each album to the user's favourites."""
-    user = cast(TidalUser, cast(object, session.user))
+    user = _user(session)
     return await _apply_per_id(ids, user.favorites.add_album, "Like album")
 
 
 async def unlike_tracks(session: tidalapi.Session, ids: list[str]) -> UploadOutcome:
     """Removes each track from the user's favourites."""
-    user = cast(TidalUser, cast(object, session.user))
+    user = _user(session)
     return await _apply_per_id(ids, user.favorites.remove_track, "Unlike track")
 
 
 async def unlike_artists(session: tidalapi.Session, ids: list[str]) -> UploadOutcome:
     """Removes each artist from the user's favourites."""
-    user = cast(TidalUser, cast(object, session.user))
+    user = _user(session)
     return await _apply_per_id(ids, user.favorites.remove_artist, "Unlike artist")
 
 
 async def unlike_albums(session: tidalapi.Session, ids: list[str]) -> UploadOutcome:
     """Removes each album from the user's favourites."""
-    user = cast(TidalUser, cast(object, session.user))
+    user = _user(session)
     return await _apply_per_id(ids, user.favorites.remove_album, "Unlike album")
 
 
@@ -126,7 +131,7 @@ def _block_write_action(
     abuse lock, retry a 5xx, and fail fast on a non-retryable status. The
     per-id boundary lives in `_apply_per_id`, outside the gate.
     """
-    user = cast(TidalUser, cast(object, session.user))
+    user = _user(session)
     base_path = f"users/{user.id}/blocks/artists"
 
     def _action(artist_id: str) -> Any:

@@ -49,6 +49,60 @@ class FakeTrack:
         self.id = id
 
 
+class FakeFavorites:
+    """Stands in for tidalapi.user.Favorites.
+
+    The real add_* returns a bare bool and remove_* returns False for a list
+    instead of raising, so the fake mirrors both. `reject` marks ids the
+    server refuses (a False return); `raise_for` maps an id to an exception
+    the gate would raise after exhausting its budget.
+    """
+
+    def __init__(self):
+        self.added_tracks: list[str] = []
+        self.added_artists: list[str] = []
+        self.added_albums: list[str] = []
+        self.removed_tracks: list[str] = []
+        self.removed_artists: list[str] = []
+        self.removed_albums: list[str] = []
+        self.reject: set[str] = set()
+        self.raise_for: dict[str, Exception] = {}
+
+    def _apply(self, sink: list[str], item_id):
+        if isinstance(item_id, list):
+            return False
+        if item_id in self.raise_for:
+            raise self.raise_for[item_id]
+        if item_id in self.reject:
+            return False
+        sink.append(item_id)
+        return True
+
+    def add_track(self, track_id):
+        return self._apply(self.added_tracks, track_id)
+
+    def add_artist(self, artist_id):
+        return self._apply(self.added_artists, artist_id)
+
+    def add_album(self, album_id):
+        return self._apply(self.added_albums, album_id)
+
+    def remove_track(self, track_id):
+        return self._apply(self.removed_tracks, track_id)
+
+    def remove_artist(self, artist_id):
+        return self._apply(self.removed_artists, artist_id)
+
+    def remove_album(self, album_id):
+        return self._apply(self.removed_albums, album_id)
+
+
+class FakeUser:
+    def __init__(self, user_id=4242):
+        self.id = user_id
+        self.favorites = FakeFavorites()
+
+
 class FakeSession:
     """Minimal stand-in for tidalapi.Session.
 
@@ -66,6 +120,7 @@ class FakeSession:
         self.token_type = "Bearer"
         self.refresh_token = "fake-refresh-token"
         self.expiry_time = None
+        self.user = FakeUser()
 
     def search(self, query, **kwargs):
         self.calls.append(("search", (query,), kwargs))

@@ -23,6 +23,10 @@ from ..domain.exceptions import (
     TidalTransientError,
 )
 
+# Upload batch size and pagination page size. Both are transport limits, so
+# they belong with the transport rather than in the domain package.
+CHUNK_SIZE = 50
+
 
 class GlobalTidalGate:
     """

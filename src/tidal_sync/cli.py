@@ -36,12 +36,7 @@ from rich.console import Console
 
 from .auth import _get_all_profiles, get_session, secure_delete_token
 from .domain.enums import ClearTarget
-from .domain.exceptions import TidalAuthenticationError
-from .domain.logger import (
-    setup_audit_logging,
-    setup_global_logging,
-    stop_audit_logging,
-)
+from .domain.exceptions import TidalAuthenticationError, TidalSyncError
 from .engine.exporter import (
     export_algorithmic_mixes_to_disk,
     export_user_favourites_to_disk,
@@ -49,6 +44,11 @@ from .engine.exporter import (
 )
 from .engine.importer import import_collection_from_disk
 from .engine.wiping import purge_target_category_async
+from .infrastructure.logger import (
+    setup_audit_logging,
+    setup_global_logging,
+    stop_audit_logging,
+)
 
 app = typer.Typer(
     help="Modern CLI for managing, importing, exporting, and cloning Tidal libraries."
@@ -129,6 +129,9 @@ def import_data(
     except TidalAuthenticationError as e:
         console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
         raise typer.Exit(1) from e
+    except TidalSyncError as e:
+        console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
+        raise typer.Exit(1) from e
 
 
 @app.command(name="export")
@@ -161,6 +164,9 @@ def export_all(
 
     try:
         asyncio.run(run_exports())
+    except TidalSyncError as e:
+        console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
+        raise typer.Exit(1) from e
     finally:
         stop_audit_logging()
 
@@ -186,6 +192,9 @@ def clear(
         session = get_session(profile)
     except TidalAuthenticationError as e:
         console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+        raise typer.Exit(1) from e
+    except TidalSyncError as e:
+        console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
         raise typer.Exit(1) from e
 
     user_id = getattr(getattr(session, "user", None), "id", "unknown")

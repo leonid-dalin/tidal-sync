@@ -8,7 +8,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from tidal_sync.domain.logger import (
+from tidal_sync.infrastructure.logger import (
     audit_log_path,
     redact,
     setup_audit_logging,
@@ -64,7 +64,7 @@ def test_stop_audit_logging_leaves_the_console_sink_installed(tmp_path):
 
 
 def _AUDIT_HANDLERS_ids():
-    from tidal_sync.domain.logger import _AUDIT_HANDLERS
+    from tidal_sync.infrastructure.logger import _AUDIT_HANDLERS
 
     return [hid for hid, _ in _AUDIT_HANDLERS]
 

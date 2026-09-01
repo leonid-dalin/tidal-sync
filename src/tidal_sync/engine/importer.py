@@ -18,10 +18,10 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 from ..domain.models import AlbumRow, ArtistRow, TrackRow
-from ..domain.protocols import CHUNK_SIZE, TidalUser
+from ..domain.protocols import TidalUser
 from .folders import assign_playlist_to_v2_folder, ensure_v2_folder_exists
 from .match_policy import decide
-from .network import execute_network, fetch_all_async
+from .network import CHUNK_SIZE, execute_network, fetch_all_async
 from .parser import parse_csv
 from .upload_recovery import upload_batch_with_recovery
 from .workers import ImportStats, run_matching_tasks_async

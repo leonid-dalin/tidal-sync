@@ -55,8 +55,20 @@ async def import_collection_from_disk(
 
     elif target_path.is_dir():
         console.print(f"[bold cyan]Scanning directory:[/bold cyan] {target_path}\n")
-        for file_path in target_path.rglob("*.csv"):
-            await resolve_and_import_playlist(session, file_path, None, stats)
+        failed_files: list[str] = []
+
+        for file_path in sorted(target_path.rglob("*.csv")):
+            try:
+                await resolve_and_import_playlist(session, file_path, None, stats)
+            except Exception as e:
+                # One unreadable file must not abort the run or lose the summary.
+                failed_files.append(f"{file_path.name}: {e}")
+                logger.error("Import failed for {file}", file=file_path.name, error=repr(e))
+
+        if failed_files:
+            console.print(f"\n[bold red]{len(failed_files)} file(s) failed:[/bold red]")
+            for detail in failed_files[:20]:
+                console.print(f"  [dim]{detail}[/dim]")
     else:
         logger.error("Path not found", path=str(target_path))
 

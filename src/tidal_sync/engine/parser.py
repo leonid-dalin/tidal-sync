@@ -158,7 +158,15 @@ def parse_csv[T: BaseModel](file_path: Path, model_class: type[T]) -> list[T]:
                 return []
             continue
 
+    # Every fallback encoding accepts nearly any byte sequence, so a corrupt
+    # file decodes to garbage instead of raising.
+    if not content.strip():
+        raise ValueError(f"{file_path.name}: file is empty")
+
     reader = csv.DictReader(io.StringIO(content))
+
+    if not reader.fieldnames:
+        raise ValueError(f"{file_path.name}: no CSV header row found")
 
     for row in reader:
         try:
@@ -169,5 +177,12 @@ def parse_csv[T: BaseModel](file_path: Path, model_class: type[T]) -> list[T]:
             logger.debug("Skipped malformed/empty CSV row", file=file_path.name)
         except Exception as e:
             logger.warning("Unexpected error parsing row", file=file_path.name, error=str(e))
+
+    if not items:
+        # Valid decode with no valid rows means a mismatched file, not an empty one.
+        raise ValueError(
+            f"{file_path.name}: no valid rows for {model_class.__name__}; "
+            "check the header names and the source export"
+        )
 
     return items

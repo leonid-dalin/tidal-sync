@@ -140,11 +140,16 @@ def _summarise_validation_error(error: ValidationError) -> str:
 
 def _clean_row(row: dict[Any, Any]) -> dict[str, Any]:
     """
-    Sanitises raw CSV exports to prevent database mismatch errors.
+    Sanitises raw CSV exports and normalises header spellings.
 
     Music metadata exports often contain hidden Byte Order Marks (BOM),
-    null bytes (\\x00), and trailing whitespace. This function strips
+    null bytes (\x00), and trailing whitespace. This function strips
     those artefacts from both column headers and values.
+
+    Exports also arrive from Exportify, TuneMyMusic, and this tool itself,
+    so headers vary in case and separator. Alongside the original key this
+    exposes a lowercased, underscore-joined form so each model can
+    declare one canonical snake_case alias per field.
 
     Args:
         row (dict[Any, Any]): A single parsed row from the CSV DictReader.
@@ -152,16 +157,19 @@ def _clean_row(row: dict[Any, Any]) -> dict[str, Any]:
     Returns:
         dict[str, Any]: A cleaned dictionary safe for Pydantic validation.
     """
-    cleaned = {}
+    cleaned: dict[str, Any] = {}
     for k, v in row.items():
         if k is not None:  # Ignore stray un-headered columns (e.g., trailing commas)
-            clean_key = str(k).strip()
+            clean_key = str(k).strip().lstrip("\ufeff")
             clean_val = str(v).strip() if isinstance(v, str) else v
 
             if isinstance(clean_val, str):
                 clean_val = clean_val.replace("\x00", "")
 
             cleaned[clean_key] = clean_val
+
+            normalised = clean_key.lower().replace(" ", "_")
+            cleaned.setdefault(normalised, clean_val)
     return cleaned
 
 

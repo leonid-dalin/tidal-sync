@@ -41,20 +41,30 @@ class TrackRow(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    # Aliases handle both Exportify and the TuneMyMusic formats
-    track_name: str = Field(validation_alias=AliasChoices("Track name", "Track Name", "track_name"))
-    artist_name: str = Field(
-        validation_alias=AliasChoices("Artist name", "Artist Name(s)", "artist_name")
+    # The parser folds every header to snake_case, so one canonical alias
+    # per field covers Exportify, TuneMyMusic and this tool's own export.
+    track_name: str = Field(
+        validation_alias=AliasChoices(
+            "Track name", "Track Name", "track name", "track_name", "title"
+        )
     )
-    album: str | None = Field(default=None, validation_alias=AliasChoices("Album", "album"))
+    artist_name: str = Field(
+        validation_alias=AliasChoices("Artist name", "Artist Name(s)", "artist name", "artist_name")
+    )
+    album: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("Album", "album", "album name", "album_name"),
+    )
     playlist_name: str | None = Field(
-        default=None, validation_alias=AliasChoices("Playlist name", "playlist_name")
+        default=None,
+        validation_alias=AliasChoices("Playlist name", "playlist name", "playlist_name"),
     )
 
     # High-fidelity matching fields
     isrc: str | None = Field(default=None, validation_alias=AliasChoices("ISRC", "isrc"))
     tidal_id: str | None = Field(
-        default=None, validation_alias=AliasChoices("Tidal - id", "tidal_id")
+        default=None,
+        validation_alias=AliasChoices("Tidal - id", "tidal id", "tidal_id", "id"),
     )
 
     @property

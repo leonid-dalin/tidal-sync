@@ -9,8 +9,6 @@ shift values rather than failing. A header that matches no alias is what
 actually drops a row, so that is what these tests use.
 """
 
-from pathlib import Path
-
 import pytest
 
 from tidal_sync.domain.models import TrackRow
@@ -76,3 +74,30 @@ def test_drop_message_names_the_line_and_file(tmp_path, log_records):
     # The sink fixture formats {message} only, so the file binder is carried
     # as record context rather than appearing in the rendered text.
     assert "Field required" in dropped[0], dropped[0]
+
+
+def test_exported_tracks_reimport_with_album_intact(tmp_path):
+    """Round-trip: whatever the writer emits, the parser must read back."""
+    from tests.fakes import FakeAlbum, FakeTrack
+    from tidal_sync.engine.parser import write_tracks_csv_sync
+
+    tracks = [FakeTrack(name="Helena", album=FakeAlbum(name="Three Cheers"))]
+    path = tmp_path / "roundtrip.csv"
+    write_tracks_csv_sync(path, tracks)
+
+    rows = parse_csv(path, TrackRow)
+
+    assert len(rows) == 1
+    assert rows[0].track_name == "Helena"
+    assert rows[0].album == "Three Cheers"
+
+
+def test_lowercase_headers_still_parse(tmp_path):
+    path = tmp_path / "lower.csv"
+    path.write_text(
+        "track name,artist name,album name,isrc,tidal id\nSong,Artist,Album,ISRC1,1\n",
+        encoding="utf-8",
+    )
+    rows = parse_csv(path, TrackRow)
+    assert len(rows) == 1
+    assert rows[0].tidal_id == "1"

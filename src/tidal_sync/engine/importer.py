@@ -21,10 +21,11 @@ from ..domain.logger import setup_audit_logging
 from ..domain.models import AlbumRow, TrackRow
 from ..domain.protocols import CHUNK_SIZE, TidalUser
 from .folders import assign_playlist_to_v2_folder, ensure_v2_folder_exists
+from .match_policy import decide
 from .network import execute_network, fetch_all_async
 from .parser import parse_csv
 from .upload_recovery import upload_batch_with_recovery
-from .workers import ImportStats, handle_match_result_async, run_matching_tasks_async
+from .workers import ImportStats, run_matching_tasks_async
 
 console = Console()
 
@@ -283,7 +284,7 @@ async def import_tracks_category_async(
         if matched_id:
             staged_tracks_map[matched_id] = track
 
-        await handle_match_result_async(
+        await decide(
             matched_id,
             "Track",
             track.track_name,
@@ -390,7 +391,7 @@ async def import_albums_async(
 
         failure_reason = "Text search failed" if not matched_id else "N/A"
 
-        await handle_match_result_async(
+        await decide(
             matched_id,
             "Album",
             album.album_name,

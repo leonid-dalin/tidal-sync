@@ -12,7 +12,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from loguru import logger
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
@@ -46,91 +45,6 @@ class ImportStats:
     async def add_added(self, count: int = 1) -> None:
         async with self.lock:
             self.added += count
-
-
-async def handle_match_result_async(
-    matched_id: str | None,
-    item_type: str,
-    item_name: str,
-    artist_name: str,
-    source_file: str,
-    dest_name: str,
-    existing_ids: set[str],
-    stats: ImportStats,
-    add_method: Callable[[str], Awaitable[Any]] | None = None,
-    ids_to_add: list[str] | None = None,
-    failure_reason: str = "Not Found on Tidal",
-) -> None:
-    """
-    Processes and logs the outcome of a metadata matching operation.
-
-    Updates the global session statistics using an asynchronous lock to
-    prevent race conditions. It ensures network actions (like adding a track)
-    execute outside the lock to maintain true concurrency across the worker pool.
-
-    Args:
-        matched_id (str | None): The Tidal database ID if a match was found.
-        item_type (str): The category of the item (e.g., "Track", "Album").
-        item_name (str): The primary title of the item.
-        artist_name (str): The primary artist associated with the item.
-        source_file (str): The filename where the metadata originated.
-        dest_name (str): The target playlist or category in the user's library.
-        existing_ids (set[str]): A shared set of IDs already present in the destination.
-        stats (ImportStats): The shared counter tracking session outcomes.
-        add_method (Callable | None): The network function to execute if the item is new.
-        ids_to_add (list[str] | None): A batch array to append the ID to (for chunked uploads).
-        failure_reason (str): The reason logged if the match failed.
-            Defaults to "Not Found on Tidal".
-    """
-    if matched_id:
-        is_new = False
-
-        async with stats.lock:
-            if matched_id not in existing_ids:
-                existing_ids.add(matched_id)
-                if ids_to_add is not None:
-                    ids_to_add.append(matched_id)
-                is_new = True
-
-        if is_new:
-            if add_method:
-                try:
-                    await add_method(matched_id)
-                    await stats.add_added()
-                except Exception as e:
-                    # Catch region-locks/404s for single items (Albums/Artists)
-                    # so they don't crash the entire TaskGroup.
-                    await stats.add_failed()
-                    logger.bind(audit=True).error(
-                        "Item Add Failed (Region Locked or Removed)",
-                        type=item_type,
-                        name=item_name,
-                        artist=artist_name,
-                        error=str(e),
-                    )
-                    return
-            logger.bind(audit=True).debug(
-                "Item Staged", type=item_type, name=item_name, dest=dest_name
-            )
-        else:
-            await stats.add_skipped()
-            logger.bind(audit=True).info(
-                "Skipped (Duplicate)",
-                type=item_type,
-                name=item_name,
-                artist=artist_name,
-                dest=dest_name,
-            )
-    else:
-        await stats.add_failed()
-        logger.bind(audit=True).warning(
-            "Failed to Match",
-            type=item_type,
-            name=item_name,
-            artist=artist_name,
-            source=source_file,
-            reason=failure_reason,
-        )
 
 
 async def run_matching_tasks_async(

@@ -19,6 +19,8 @@ from typing import Any
 from loguru import logger
 from pydantic import BaseModel, ValidationError
 
+from ..domain.exceptions import BackupFileError
+
 
 def normalises_playlist_id(raw_id: str | Any) -> str:
     """
@@ -260,14 +262,14 @@ def parse_csv[T: BaseModel](file_path: Path, model_class: type[T]) -> list[T]:
     # Every fallback encoding accepts nearly any byte sequence, so a corrupt
     # file decodes to garbage instead of raising.
     if not content.strip():
-        raise ValueError(f"{file_path.name}: file is empty")
+        raise BackupFileError(f"{file_path.name}: file is empty")
 
     reader = csv.DictReader(io.StringIO(content))
     total = 0
     dropped = 0
 
     if not reader.fieldnames:
-        raise ValueError(f"{file_path.name}: no CSV header row found")
+        raise BackupFileError(f"{file_path.name}: no CSV header row found")
 
     for row in reader:
         total += 1
@@ -301,7 +303,7 @@ def parse_csv[T: BaseModel](file_path: Path, model_class: type[T]) -> list[T]:
         )
 
     if not items:
-        raise ValueError(
+        raise BackupFileError(
             f"{file_path.name}: no valid rows for {model_class.__name__}; "
             "check the header names and the source export"
         )

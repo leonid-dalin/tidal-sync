@@ -11,6 +11,7 @@ actually drops a row, so that is what these tests use.
 
 import pytest
 
+from tidal_sync.domain.exceptions import BackupFileError
 from tidal_sync.domain.models import TrackRow
 from tidal_sync.engine.parser import parse_csv
 
@@ -27,7 +28,7 @@ def test_unknown_header_drops_every_row_and_says_so(tmp_path, log_records):
 
     # Every row failing is the worst case, so it must be reported before
     # the raise rather than swallowed by it.
-    with pytest.raises(ValueError, match="no valid rows"):
+    with pytest.raises(BackupFileError, match="no valid rows"):
         parse_csv(csv_path, TrackRow)
 
     dropped = [r for r in log_records if "Dropped CSV row" in r]
@@ -65,7 +66,7 @@ def test_drop_message_names_the_line_and_file(tmp_path, log_records):
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(BackupFileError):
         parse_csv(csv_path, TrackRow)
 
     dropped = [r for r in log_records if "Dropped CSV row" in r]

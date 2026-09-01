@@ -56,3 +56,9 @@ class TidalPoisonError(TidalSyncError):
     """
 
     pass
+
+
+class BackupFileError(TidalSyncError):
+    """Raised when a backup CSV is empty, headerless, or holds no valid rows."""
+
+    pass

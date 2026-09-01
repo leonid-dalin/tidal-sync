@@ -129,7 +129,7 @@ def import_data(
     except TidalAuthenticationError as e:
         console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
         raise typer.Exit(1) from e
-    except (TidalSyncError, ValueError) as e:
+    except TidalSyncError as e:
         console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
         raise typer.Exit(1) from e
 

@@ -36,8 +36,9 @@ Example:
     Start an audit session and write a secure log:
 
     >>> from pathlib import Path
-    >>> from logger import setup_audit_logging, logger
-    >>> log_file = setup_audit_logging(Path("./exports/reports"))
+    >>> from tidal_sync.infrastructure.logger import setup_audit_logging, logger
+    >>> handler_id = setup_audit_logging(Path("./exports/reports"))
+    >>> audit_log_path(handler_id)
     >>> logger.bind(audit=True).info("Processing playlist", extra={"id": 123})
 
 Note:
@@ -48,6 +49,7 @@ Note:
 
 import contextlib
 import re
+import secrets
 import sys
 from collections.abc import Mapping
 from datetime import datetime
@@ -132,10 +134,11 @@ def setup_audit_logging(report_dir: Path) -> int:
     """Starts the JSONL audit sink. Returns the handler id for later removal."""
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    # Microsecond precision: two runs in the same second previously appended
-    # to one file, merging two jobs' records.
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    log_file = report_dir / f"audit_{timestamp}.jsonl"
+    # The clock alone is not unique on Windows, where ticks lack microsecond
+    # precision and two calls inside one tick collide. A random suffix makes
+    # the path collision-proof while keeping the timestamp for readability.
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = report_dir / f"audit_{timestamp}_{secrets.token_hex(4)}.jsonl"
 
     handler_id = logger.add(
         log_file,

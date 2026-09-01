@@ -37,12 +37,22 @@ def test_nested_extras_are_redacted():
     assert "secret" not in redact({"token": "Bearer secret-token-value"})
 
 
-def test_two_runs_in_the_same_second_do_not_share_a_log_file(tmp_path):
-    """F27: second-resolution timestamps merged two runs into one file.
+def test_two_runs_in_the_same_second_do_not_share_a_log_file(tmp_path, monkeypatch):
+    """F27: two runs in the same tick must not merge into one file.
 
-    The filename now carries microseconds, so two runs that land in the same
-    wall-clock second still get distinct files.
+    The clock is frozen so both calls get an identical timestamp. The fix
+    derives uniqueness from a random suffix (not the wall clock), so the two
+    paths still differ. Against the old implementation this fails: with a
+    frozen clock and no suffix the two names are identical.
     """
+    from datetime import datetime
+
+    from tidal_sync.infrastructure import logger as logger_module
+
+    fixed = datetime(2026, 1, 1, 12, 0, 0)
+    monkeypatch.setattr(logger_module, "datetime", type("_FrozenDt", (datetime,), {}))
+    monkeypatch.setattr(logger_module.datetime, "now", classmethod(lambda cls: fixed))
+
     first = setup_audit_logging(tmp_path)
     first_path = audit_log_path(first)
     stop_audit_logging()

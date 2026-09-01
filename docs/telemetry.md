@@ -15,9 +15,16 @@ The file sink is configured for long-term safety:
 
 ## Security Redaction
 
-The tool interacts heavily with the Tidal API, meaning raw requests often contain your active OAuth `sessionId`. 
+The tool interacts heavily with the Tidal API, meaning raw requests often carry your active OAuth token.
 
-To prevent credentials from leaking into your local log files, the `logger.py` module passes every log record through a regex gatekeeper (`redact_filter`). This filter scans both the log message and the associated error trace, replacing any active session tokens with `[REDACTED]` before the record reaches the disk.
+To stop credentials reaching the local log files, the `logger.py` module redacts every record before it is written. `redact()` runs recursively over the message and over `extra` (dicts, lists, and scalars), replacing:
+
+* `sessionId=<value>` with `sessionId=[REDACTED]`
+* any `Bearer <token>` with `Bearer [REDACTED]`
+* `access_token=<value>` and `refresh_token=<value>` with `[REDACTED]`
+* any extra key matching `token|secret|password|authorization|bearer` with `[REDACTED]`
+
+Unserialisable values in `extra` (a `Path`, a `set`, a tidalapi object) no longer drop the record: the JSON serialiser coerces them with `default=str`, so the audit entry survives.
 
 ## Template Injection Safety
 

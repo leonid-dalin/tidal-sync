@@ -46,8 +46,10 @@ Note:
     dictionary before yielding it to the sink.
 """
 
+import contextlib
 import re
 import sys
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -56,8 +58,35 @@ import orjson
 from loguru import logger
 
 REDACT_PATTERNS = [
-    (re.compile(r"sessionId=[a-zA-Z0-9-]+"), "sessionId=[REDACTED]"),
+    (re.compile(r"sessionId=[a-zA-Z0-9-]+", re.IGNORECASE), "sessionId=[REDACTED]"),
+    (re.compile(r"Bearer\s+\S+", re.IGNORECASE), "Bearer [REDACTED]"),
+    (re.compile(r"(access_token|refresh_token)=[^\s&\"']+", re.IGNORECASE), r"\1=[REDACTED]"),
+    (
+        re.compile(r'"(access_token|refresh_token)"\s*:\s*"[^"]*"', re.IGNORECASE),
+        r'"\1": "[REDACTED]"',
+    ),
 ]
+
+_SENSITIVE_KEY_HINT = re.compile(r"token|secret|password|authorization|bearer", re.IGNORECASE)
+
+
+def redact(value: Any) -> Any:
+    """Strips credentials out of strings, mappings, and sequences, recursively."""
+    if isinstance(value, str):
+        for pattern, replacement in REDACT_PATTERNS:
+            value = pattern.sub(replacement, value)
+        return value
+
+    if isinstance(value, Mapping):
+        return {
+            k: ("[REDACTED]" if _SENSITIVE_KEY_HINT.search(str(k)) else redact(v))
+            for k, v in value.items()
+        }
+
+    if isinstance(value, (list, tuple)):
+        return type(value)(redact(v) for v in value)
+
+    return value
 
 
 def audit_filter(record: Any) -> bool:
@@ -65,19 +94,17 @@ def audit_filter(record: Any) -> bool:
 
 
 def json_formatter(record: Any) -> str:
-    message = record["message"]
-    error_val = record["extra"].get("error")
+    """Serialises one audit record as JSONL.
 
-    for pattern, replacement in REDACT_PATTERNS:
-        message = pattern.sub(replacement, message)
-        if isinstance(error_val, str):
-            error_val = pattern.sub(replacement, error_val)
+    `default=str` is load-bearing: without it, an unserialisable value in
+    `extra` makes orjson raise inside the sink thread and loguru discards the
+    record, which is exactly the record needed to explain a dropped track.
+    """
+    message = redact(record["message"])
 
     clean_extra = {
-        k: v for k, v in record["extra"].items() if k not in ("audit", "serialized", "error")
+        k: redact(v) for k, v in record["extra"].items() if k not in ("audit", "serialized")
     }
-    if error_val is not None:
-        clean_extra["error"] = error_val
 
     record["extra"]["serialized"] = orjson.dumps(
         {
@@ -85,7 +112,8 @@ def json_formatter(record: Any) -> str:
             "level": record["level"].name.lower(),
             "message": message,
             "extra": clean_extra,
-        }
+        },
+        default=str,
     ).decode()
 
     return "{extra[serialized]}\n"
@@ -94,16 +122,22 @@ def json_formatter(record: Any) -> str:
 def setup_global_logging() -> None:
     logger.remove()
     logger.add(
-        sys.stderr, level="WARNING", filter=lambda record: not record["extra"].get("audit", False)
+        sys.stderr,
+        level="WARNING",
+        filter=lambda record: not record["extra"].get("audit", False),
     )
 
 
-def setup_audit_logging(report_dir: Path) -> Path:
+def setup_audit_logging(report_dir: Path) -> int:
+    """Starts the JSONL audit sink. Returns the handler id for later removal."""
     report_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Microsecond precision: two runs in the same second previously appended
+    # to one file, merging two jobs' records.
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     log_file = report_dir / f"audit_{timestamp}.jsonl"
 
-    logger.add(
+    handler_id = logger.add(
         log_file,
         format=json_formatter,
         level="DEBUG",
@@ -113,4 +147,25 @@ def setup_audit_logging(report_dir: Path) -> Path:
         compression="gz",
         enqueue=True,
     )
-    return log_file
+
+    _AUDIT_HANDLERS.append((handler_id, log_file))
+    return handler_id
+
+
+_AUDIT_HANDLERS: list[tuple[int, Path]] = []
+
+
+def audit_log_path(handler_id: int) -> Path | None:
+    """Resolves the file path for an audit handler started by this module."""
+    for known_id, path in _AUDIT_HANDLERS:
+        if known_id == handler_id:
+            return path
+    return None
+
+
+def stop_audit_logging() -> None:
+    """Removes every audit sink this module added, flushing the queue."""
+    while _AUDIT_HANDLERS:
+        handler_id, _ = _AUDIT_HANDLERS.pop()
+        with contextlib.suppress(ValueError):
+            logger.remove(handler_id)

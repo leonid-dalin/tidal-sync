@@ -32,13 +32,16 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from loguru import logger
 from rich.console import Console
 
 from .auth import _get_all_profiles, get_session, secure_delete_token
 from .domain.enums import ClearTarget
 from .domain.exceptions import TidalAuthenticationError
-from .domain.logger import setup_global_logging
+from .domain.logger import (
+    setup_audit_logging,
+    setup_global_logging,
+    stop_audit_logging,
+)
 from .engine.exporter import (
     export_algorithmic_mixes_to_disk,
     export_user_favourites_to_disk,
@@ -116,9 +119,16 @@ def import_data(
     """
     try:
         session = get_session(profile)
-        asyncio.run(import_collection_from_disk(session, target_path, target_playlist_name=name))
-    finally:
-        logger.remove()  # Safely flushes the enqueue=True background threads before the CLI exits
+        setup_audit_logging(Path("./import_reports"))
+        try:
+            asyncio.run(
+                import_collection_from_disk(session, target_path, target_playlist_name=name)
+            )
+        finally:
+            stop_audit_logging()
+    except TidalAuthenticationError as e:
+        console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+        raise typer.Exit(1) from e
 
 
 @app.command(name="export")
@@ -141,6 +151,7 @@ def export_all(
         profile (str): The authentication profile to export from.
     """
     session = get_session(profile)
+    setup_audit_logging(output_dir / "reports")
 
     async def run_exports():
         async with asyncio.TaskGroup() as tg:
@@ -148,7 +159,10 @@ def export_all(
             tg.create_task(export_user_favourites_to_disk(session, output_dir))
             tg.create_task(export_algorithmic_mixes_to_disk(session, output_dir))
 
-    asyncio.run(run_exports())
+    try:
+        asyncio.run(run_exports())
+    finally:
+        stop_audit_logging()
 
 
 @app.command()
@@ -180,13 +194,17 @@ def clear(
         f"{user_id} (profile '{profile}').[/bold red]"
     )
 
-    if not force and not dry_run:
-        typed = typer.prompt(f"Type '{profile}' to confirm irreversible deletion of {target}")
-        if typed != profile:
-            console.print("[red]Confirmation did not match. Aborting.[/red]")
-            raise typer.Abort()
+    setup_audit_logging(Path("./import_reports"))
+    try:
+        if not force and not dry_run:
+            typed = typer.prompt(f"Type '{profile}' to confirm irreversible deletion of {target}")
+            if typed != profile:
+                console.print("[red]Confirmation did not match. Aborting.[/red]")
+                raise typer.Abort()
 
-    report = asyncio.run(purge_target_category_async(session, target, dry_run=dry_run))
+        report = asyncio.run(purge_target_category_async(session, target, dry_run=dry_run))
+    finally:
+        stop_audit_logging()
 
     if dry_run:
         console.print(f"[yellow]Dry run: would attempt {report.requested} deletions.[/yellow]")

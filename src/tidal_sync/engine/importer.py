@@ -17,7 +17,6 @@ from loguru import logger
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
-from ..domain.logger import setup_audit_logging
 from ..domain.models import AlbumRow, ArtistRow, TrackRow
 from ..domain.protocols import CHUNK_SIZE, TidalUser
 from .folders import assign_playlist_to_v2_folder, ensure_v2_folder_exists
@@ -45,7 +44,6 @@ async def import_collection_from_disk(
         target_path (Path): The file or directory path containing source CSVs.
         target_playlist_name (str | None): An optional override for the destination name.
     """
-    log_file = setup_audit_logging(Path("./import_reports"))
     stats = ImportStats()
     logger.bind(audit=True).info("Import Job Started", target=str(target_path))
 
@@ -77,7 +75,7 @@ async def import_collection_from_disk(
     console.print(f"  • {stats.added} items successfully imported")
     console.print(f"  • {stats.skipped} items skipped (already owned/duplicates)")
     console.print(f"  • {stats.failed} items failed (could not be found on Tidal)")
-    console.print(f"  • Detailed machine-readable log: [underline]{log_file}[/underline]")
+    console.print("  • Detailed machine-readable log: [underline]import_reports/[/underline]")
 
 
 async def resolve_and_import_playlist(

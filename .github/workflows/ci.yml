@@ -14,3 +14,6 @@ jobs:
       - run: ruff check src
       - run: ruff format --check src
       - run: pytest -q
+      # Reports type gaps without failing the build while the backlog clears.
+      - run: mypy src
+        continue-on-error: true

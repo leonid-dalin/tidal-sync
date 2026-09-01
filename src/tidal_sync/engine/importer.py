@@ -61,7 +61,6 @@ async def import_collection_from_disk(
             try:
                 await resolve_and_import_playlist(session, file_path, None, stats)
             except Exception as e:
-                # One unreadable file must not abort the run or lose the summary.
                 failed_files.append(f"{file_path.name}: {e}")
                 logger.error("Import failed for {file}", file=file_path.name, error=repr(e))
 

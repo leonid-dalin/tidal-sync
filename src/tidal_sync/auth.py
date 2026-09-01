@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import cast
 
 import tidalapi
+from loguru import logger
 from rich.console import Console
 
 from .domain.exceptions import TidalAuthenticationError
@@ -151,6 +152,28 @@ def _save_session_to_disk(session: tidalapi.Session, token_file: Path) -> None:
         os.chmod(token_file, stat.S_IRUSR | stat.S_IWUSR)
 
 
+def _check_account_collision(session: tidalapi.Session, profile: str) -> None:
+    """Refuses to bind one Tidal account to two profiles.
+
+    A warning was not enough: with two profiles pointing at one account,
+    `clear --profile backup` can destroy the account that was exported from.
+    """
+    user = cast(TidalUser, cast(object, session.user))
+    user_id = getattr(user, "id", None)
+    if user_id is None:
+        return
+
+    collisions = [
+        name for name, uid in _get_all_profiles().items() if uid == user_id and name != profile
+    ]
+    if collisions:
+        raise TidalAuthenticationError(
+            f"Tidal account {user_id} is already saved as profile(s): "
+            f"{', '.join(sorted(collisions))}. "
+            "Use a different account, or remove the other profile first."
+        )
+
+
 def get_session(profile: str = "default") -> tidalapi.Session:
     """
     Loads an existing session or prompts the user for a new OAuth login.
@@ -193,10 +216,17 @@ def get_session(profile: str = "default") -> tidalapi.Session:
                 _save_session_to_disk(session, token_file)
                 console.print(f"[green]Authenticated as profile: [bold]{profile}[/bold][/green]")
                 return session
-        except (json.JSONDecodeError, KeyError, ValueError, OSError):
+        except (json.JSONDecodeError, KeyError, ValueError, OSError) as e:
             console.print(
                 f"[yellow]Profile '{profile}' invalid or expired. Re-authenticating...[/yellow]"
             )
+            logger.debug("Session load failed", error=repr(e))
+        except Exception as e:
+            console.print(
+                f"[yellow]Could not reach Tidal for profile '{profile}'. "
+                "Re-authenticating...[/yellow]"
+            )
+            logger.debug("Session verification failed", error=repr(e))
 
     # 2. Initiate a new OAuth login flow
     console.print(f"[cyan]Logging in to profile: [bold]{profile}[/bold][/cyan]")
@@ -208,24 +238,23 @@ def get_session(profile: str = "default") -> tidalapi.Session:
             "[red]Critical Error: Tidal API did not return a valid user object.[/red]"
         )
 
-    # 3. Collision Detection: Check if this Tidal account is already tied to another profile
-    existing_profiles = _get_all_profiles()
-    if any(p != profile and uid == user.id for p, uid in existing_profiles.items()):
-        console.print("\n[bold red]⚠️ WARNING:[/bold red] Account collision detected!")
-
-    # 4. Save and return
+    _check_account_collision(session, profile)
     _save_session_to_disk(session, token_file)
     console.print(f"[green]Successfully saved profile '{profile}'![/green]")
     return session
 
 
-def secure_delete_token(profile: str = "default") -> None:
+def secure_delete_token(profile: str = "default") -> bool:
     """
     Securely clears and removes the session token file for a profile.
 
     Performs a logical zero-fill overwrite of the token file on the disk
     before deletion to mitigate data recovery risks and prevent standard
     forensic restoration.
+
+    Returns True only when overwrite, verification and unlink all succeed.
+    A failure leaves the file in place: deleting without overwriting defeats
+    the purpose, and keeping it lets the user retry.
 
     Args:
         profile (str, optional): The name of the profile to wipe. Defaults to "default".
@@ -234,30 +263,35 @@ def secure_delete_token(profile: str = "default") -> None:
 
     if not token_file.exists():
         console.print(f"[yellow]Profile '{profile}' does not exist.[/yellow]")
-        return
+        return False
 
     try:
         file_size = token_file.stat().st_size
 
         with open(token_file, "r+b") as f:
-            # Pass 1: Overwrite with null bytes
             f.seek(0)
             f.write(b"\x00" * file_size)
             f.flush()
             os.fsync(f.fileno())
 
-            # Pass 2: Verify to overwrite succeeded
             f.seek(0)
             if f.read() != b"\x00" * file_size:
                 console.print("[red]Verification failed: Logical overwrite incomplete.[/red]")
+                console.print("[yellow]Token left in place. Retry, or delete it manually.[/yellow]")
+                return False
 
-        # Obfuscate the filename before final deletion to wipe file metadata traces
+        # Renaming first removes the profile name from the filesystem metadata.
         temp_name = token_file.with_name(secrets.token_hex(8) + ".tmp")
         token_file.rename(temp_name)
         temp_name.unlink()
 
         console.print(f"[green]Profile '{profile}' cleared and verified.[/green]")
+        return True
 
     except OSError as e:
         console.print(f"[red]Secure delete failed: {e}[/red]")
-        token_file.unlink(missing_ok=True)
+        console.print(
+            "[yellow]Token left in place and NOT overwritten. "
+            "Retry, or delete it manually.[/yellow]"
+        )
+        return False

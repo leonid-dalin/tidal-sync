@@ -163,7 +163,6 @@ def write_tracks_csv_sync(file_path: Path, tracks: Sequence[Any]) -> int:
     def _rows(writer):
         writer.writerow(["track_name", "artist_name", "album_name", "isrc", "tidal_id"])
         for track in tracks:
-            # Chain getattr so missing metadata cannot abort a whole backup.
             artist_name = getattr(getattr(track, "artist", None), "name", "Unknown")
             album_name = getattr(getattr(track, "album", None), "name", "Unknown")
 
@@ -301,7 +300,6 @@ def parse_csv[T: BaseModel](file_path: Path, model_class: type[T]) -> list[T]:
         )
 
     if not items:
-        # Valid decode with no valid rows means a mismatched file, not an empty one.
         raise ValueError(
             f"{file_path.name}: no valid rows for {model_class.__name__}; "
             "check the header names and the source export"

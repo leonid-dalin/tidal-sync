@@ -77,9 +77,7 @@ async def test_one_failing_collection_does_not_cancel_the_others(tmp_path, capsy
     bad = Collection(name="Broken", boom=True)
     good_two = Collection(name="Last")
 
-    await exporter.export_user_playlists_to_disk(
-        session_with([good_one, bad, good_two]), tmp_path
-    )
+    await exporter.export_user_playlists_to_disk(session_with([good_one, bad, good_two]), tmp_path)
 
     out = capsys.readouterr().out
     assert "playlist(s) failed" in out

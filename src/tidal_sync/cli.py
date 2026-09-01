@@ -88,7 +88,8 @@ def logout(
     Args:
         profile (str): The name of the profile to wipe. Defaults to 'default'.
     """
-    secure_delete_token(profile)
+    if not secure_delete_token(profile):
+        raise typer.Exit(1)
 
 
 @app.command(name="import")

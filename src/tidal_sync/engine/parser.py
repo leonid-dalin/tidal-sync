@@ -54,6 +54,33 @@ def normalises_playlist_id(raw_id: str | Any) -> str:
     return clean_id
 
 
+_TIDAL_ID_FROM_URL = re.compile(r"/(?:track|artist|album)/(\d+)")
+
+
+def extract_tidal_id(raw: str) -> str:
+    """
+    Resolves a bare id or a Tidal share URL into the bare id.
+
+    Accepts the bare numeric id, a browse.tidal.com or listen.tidal.com URL
+    of the form ``/<kind>/<id>`` with an optional query string and trailing
+    slash. Raises ValueError when no id can be parsed, so the CLI surfaces it
+    as a usage error rather than silently dropping the reference.
+    """
+    text = raw.strip()
+    if not text:
+        raise ValueError("empty reference")
+
+    match = _TIDAL_ID_FROM_URL.search(text)
+    if match:
+        return match.group(1)
+
+    # Bare ids are digit strings; any other shape is unparseable.
+    if text.isdigit():
+        return text
+
+    raise ValueError(f"cannot extract Tidal id from {raw!r}")
+
+
 _RESERVED_WINDOWS_NAMES = {
     "con",
     "prn",

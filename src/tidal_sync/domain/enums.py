@@ -30,3 +30,16 @@ class ClearTarget(StrEnum):
     ALBUMS = "albums"
     ARTISTS = "artists"
     PLAYLISTS = "playlists"
+
+
+class FavoriteKind(StrEnum):
+    """
+    Valid kinds for the CLI like and unlike commands.
+
+    Using a StrEnum provides native Typer validation and terminal autocomplete,
+    preventing users from passing unsupported category strings.
+    """
+
+    TRACK = "track"
+    ARTIST = "artist"
+    ALBUM = "album"

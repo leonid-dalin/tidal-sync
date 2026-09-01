@@ -29,20 +29,22 @@ Example:
 
 import asyncio
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
 
 from .auth import _get_all_profiles, get_session, secure_delete_token
-from .domain.enums import ClearTarget
+from .domain.enums import ClearTarget, FavoriteKind
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
+from .engine import curation
 from .engine.exporter import (
     export_algorithmic_mixes_to_disk,
     export_user_favourites_to_disk,
     export_user_playlists_to_disk,
 )
 from .engine.importer import import_collection_from_disk
+from .engine.parser import extract_tidal_id
 from .engine.wiping import purge_target_category_async
 from .infrastructure.logger import (
     setup_audit_logging,
@@ -232,6 +234,122 @@ def clear(
     console.print(
         f"[bold green]Successfully cleared '{target.value}' ({report.deleted} items).[/bold green]"
     )
+
+
+def _run_favourite_command(
+    *,
+    profile: str,
+    verb: Any,
+    verb_name: str,
+    kind: FavoriteKind,
+    references: list[str],
+) -> None:
+    """Shared body for the six like and unlike commands.
+
+    Resolves each reference through ``extract_tidal_id`` (bare id or share
+    URL), calls the engine verb inside ``asyncio.run``, prints one rich
+    line per id, and exits 1 if the engine reported any rejected id.
+    Authentication and sync errors share the except pair from
+    ``import_data`` so operators see the same one-line red message as the
+    rest of the CLI.
+    """
+    try:
+        session = get_session(profile)
+        try:
+            ids = [extract_tidal_id(reference) for reference in references]
+        except ValueError as e:
+            raise typer.BadParameter(str(e)) from e
+        outcome = asyncio.run(verb(session, ids))
+    except TidalAuthenticationError as e:
+        console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+        raise typer.Exit(1) from e
+    except TidalSyncError as e:
+        console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
+        raise typer.Exit(1) from e
+
+    for item_id in outcome.applied:
+        console.print(f"  [green]{verb_name} {kind.value} {item_id}[/green]")
+    for item_id in outcome.rejected:
+        console.print(f"  [red]{verb_name} {kind.value} {item_id}[/red]")
+
+    if outcome.rejected:
+        raise typer.Exit(1)
+
+
+def _like_command(verb: Any, ids: list[str], profile: str, kind: FavoriteKind) -> None:
+    _run_favourite_command(profile=profile, verb=verb, verb_name="Liked", kind=kind, references=ids)
+
+
+def _unlike_command(verb: Any, ids: list[str], profile: str, kind: FavoriteKind) -> None:
+    _run_favourite_command(
+        profile=profile, verb=verb, verb_name="Unliked", kind=kind, references=ids
+    )
+
+
+@app.command(name="like-tracks")
+def like_tracks_cmd(
+    ids: Annotated[list[str], typer.Argument(help="One or more track ids or Tidal share URLs")],
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to like into")
+    ] = "default",
+) -> None:
+    """Likes one or more tracks on the named profile."""
+    _like_command(curation.like_tracks, ids, profile, FavoriteKind.TRACK)
+
+
+@app.command(name="like-artists")
+def like_artists_cmd(
+    ids: Annotated[list[str], typer.Argument(help="One or more artist ids or Tidal share URLs")],
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to like into")
+    ] = "default",
+) -> None:
+    """Likes one or more artists on the named profile."""
+    _like_command(curation.like_artists, ids, profile, FavoriteKind.ARTIST)
+
+
+@app.command(name="like-albums")
+def like_albums_cmd(
+    ids: Annotated[list[str], typer.Argument(help="One or more album ids or Tidal share URLs")],
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to like into")
+    ] = "default",
+) -> None:
+    """Likes one or more albums on the named profile."""
+    _like_command(curation.like_albums, ids, profile, FavoriteKind.ALBUM)
+
+
+@app.command(name="unlike-tracks")
+def unlike_tracks_cmd(
+    ids: Annotated[list[str], typer.Argument(help="One or more track ids or Tidal share URLs")],
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to unlike from")
+    ] = "default",
+) -> None:
+    """Unlikes one or more tracks on the named profile."""
+    _unlike_command(curation.unlike_tracks, ids, profile, FavoriteKind.TRACK)
+
+
+@app.command(name="unlike-artists")
+def unlike_artists_cmd(
+    ids: Annotated[list[str], typer.Argument(help="One or more artist ids or Tidal share URLs")],
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to unlike from")
+    ] = "default",
+) -> None:
+    """Unlikes one or more artists on the named profile."""
+    _unlike_command(curation.unlike_artists, ids, profile, FavoriteKind.ARTIST)
+
+
+@app.command(name="unlike-albums")
+def unlike_albums_cmd(
+    ids: Annotated[list[str], typer.Argument(help="One or more album ids or Tidal share URLs")],
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to unlike from")
+    ] = "default",
+) -> None:
+    """Unlikes one or more albums on the named profile."""
+    _unlike_command(curation.unlike_albums, ids, profile, FavoriteKind.ALBUM)
 
 
 @app.command(name="profiles")

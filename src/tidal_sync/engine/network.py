@@ -5,12 +5,16 @@ Provides a centralised gatekeeper to manage API backoff across concurrent
 asynchronous tasks. It intercepts HTTP 429 (Too Many Requests) and HTTP 403
 (Abuse Detected) errors, pausing all workers to prevent account suspensions.
 """
+
 import asyncio
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
+
 import tidalapi
 from loguru import logger
 from tidalapi.exceptions import TooManyRequests
+
 
 class GlobalTidalGate:
     """
@@ -21,6 +25,7 @@ class GlobalTidalGate:
     during their pre-flight checks and sleep rather than opening new connections
     into an active throttle.
     """
+
     def __init__(self):
         self.backoff_until: float = 0.0
         self.lock = asyncio.Lock()
@@ -44,6 +49,7 @@ class GlobalTidalGate:
 
 
 GLOBAL_GATE = GlobalTidalGate()
+
 
 async def execute_network(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     """
@@ -73,8 +79,9 @@ async def execute_network(func: Callable[..., Any], *args: Any, **kwargs: Any) -
         try:
             return await asyncio.to_thread(func, *args, **kwargs)
         except TooManyRequests as e:
-            retry_after = getattr(e, 'retry_after', 60.0)
-            if retry_after <= 0: retry_after = 60.0
+            retry_after = getattr(e, "retry_after", 60.0)
+            if retry_after <= 0:
+                retry_after = 60.0
             await GLOBAL_GATE.trigger_backoff(retry_after, "HTTP 429 Too Many Requests")
             retries += 1
         except Exception as e:
@@ -88,6 +95,7 @@ async def execute_network(func: Callable[..., Any], *args: Any, **kwargs: Any) -
             else:
                 raise
     raise Exception(f"Max retries exceeded for {func.__name__} due to rate limiting.")
+
 
 async def fetch_all_async(api_method: Any, **kwargs: Any) -> list[Any]:
     """
@@ -105,6 +113,7 @@ async def fetch_all_async(api_method: Any, **kwargs: Any) -> list[Any]:
         list[Any]: A complete, unpaginated list of all items.
     """
     return await execute_network(_fetch_all_sync, api_method, **kwargs)
+
 
 def _fetch_all_sync(api_method: Any, **kwargs: Any) -> list[Any]:
     """
@@ -136,7 +145,7 @@ def _fetch_all_sync(api_method: Any, **kwargs: Any) -> list[Any]:
         if not chunk:
             break
 
-        current_chunk_ids = [getattr(item, 'id', id(item)) for item in chunk]
+        current_chunk_ids = [getattr(item, "id", id(item)) for item in chunk]
 
         # Infinite loop guard: detects if the API ignores the offset and repeats pages
         if offset > 0 and current_chunk_ids == last_chunk_ids:
@@ -147,6 +156,7 @@ def _fetch_all_sync(api_method: Any, **kwargs: Any) -> list[Any]:
         offset += limit
 
     return items
+
 
 def fetch_blocked_artists(session: tidalapi.Session) -> list[Any]:
     """
@@ -162,7 +172,7 @@ def fetch_blocked_artists(session: tidalapi.Session) -> list[Any]:
         list[Any]: A list of artist objects recovered from the blocklist.
     """
     user = session.user
-    if not user or not getattr(user, 'id', None):
+    if not user or not getattr(user, "id", None):
         return []
 
     endpoint = f"users/{user.id}/blocks/artists"
@@ -174,11 +184,7 @@ def fetch_blocked_artists(session: tidalapi.Session) -> list[Any]:
     while True:
         params = {"limit": limit, "offset": offset}
         try:
-            chunk = session.request.map_request(
-                endpoint,
-                params=params,
-                parse=session.parse_artist
-            )
+            chunk = session.request.map_request(endpoint, params=params, parse=session.parse_artist)
             if isinstance(chunk, dict) and "items" in chunk:
                 chunk = [session.parse_artist(item.get("item", item)) for item in chunk["items"]]
         except Exception as e:

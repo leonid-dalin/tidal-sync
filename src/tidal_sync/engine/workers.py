@@ -8,11 +8,13 @@ state management during bulk track matching and uploading.
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable
+from typing import Any
+
 from loguru import logger
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 console = Console()
 MAX_CONCURRENCY = 10
@@ -27,33 +29,37 @@ class ImportStats:
     concurrent tasks. Uses an internal lock to ensure atomic updates to counters
     and the shared 'existing_ids' set.
     """
+
     skipped: int = 0
     failed: int = 0
     added: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def add_skipped(self) -> None:
-        async with self.lock: self.skipped += 1
+        async with self.lock:
+            self.skipped += 1
 
     async def add_failed(self) -> None:
-        async with self.lock: self.failed += 1
+        async with self.lock:
+            self.failed += 1
 
     async def add_added(self, count: int = 1) -> None:
-        async with self.lock: self.added += count
+        async with self.lock:
+            self.added += count
 
 
 async def handle_match_result_async(
-        matched_id: str | None,
-        item_type: str,
-        item_name: str,
-        artist_name: str,
-        source_file: str,
-        dest_name: str,
-        existing_ids: set[str],
-        stats: ImportStats,
-        add_method: Callable[[str], Awaitable[Any]] | None = None,
-        ids_to_add: list[str] | None = None,
-        failure_reason: str = "Not Found on Tidal"
+    matched_id: str | None,
+    item_type: str,
+    item_name: str,
+    artist_name: str,
+    source_file: str,
+    dest_name: str,
+    existing_ids: set[str],
+    stats: ImportStats,
+    add_method: Callable[[str], Awaitable[Any]] | None = None,
+    ids_to_add: list[str] | None = None,
+    failure_reason: str = "Not Found on Tidal",
 ) -> None:
     """
     Processes and logs the outcome of a metadata matching operation.
@@ -73,7 +79,8 @@ async def handle_match_result_async(
         stats (ImportStats): The shared counter tracking session outcomes.
         add_method (Callable | None): The network function to execute if the item is new.
         ids_to_add (list[str] | None): A batch array to append the ID to (for chunked uploads).
-        failure_reason (str): The reason logged if the match failed. Defaults to "Not Found on Tidal".
+        failure_reason (str): The reason logged if the match failed.
+            Defaults to "Not Found on Tidal".
     """
     if matched_id:
         is_new = False
@@ -99,14 +106,11 @@ async def handle_match_result_async(
                         type=item_type,
                         name=item_name,
                         artist=artist_name,
-                        error=str(e)
+                        error=str(e),
                     )
                     return
             logger.bind(audit=True).debug(
-                "Item Staged",
-                type=item_type,
-                name=item_name,
-                dest=dest_name
+                "Item Staged", type=item_type, name=item_name, dest=dest_name
             )
         else:
             await stats.add_skipped()
@@ -115,7 +119,7 @@ async def handle_match_result_async(
                 type=item_type,
                 name=item_name,
                 artist=artist_name,
-                dest=dest_name
+                dest=dest_name,
             )
     else:
         await stats.add_failed()
@@ -125,10 +129,13 @@ async def handle_match_result_async(
             name=item_name,
             artist=artist_name,
             source=source_file,
-            reason=failure_reason
+            reason=failure_reason,
         )
 
-async def run_matching_tasks_async(task_desc: str, items: list[Any], match_func: Callable[[Any], Awaitable[Any]]) -> None:
+
+async def run_matching_tasks_async(
+    task_desc: str, items: list[Any], match_func: Callable[[Any], Awaitable[Any]]
+) -> None:
     """
     Executes concurrent asynchronous tasks while updating a Rich progress bar.
 
@@ -140,11 +147,11 @@ async def run_matching_tasks_async(task_desc: str, items: list[Any], match_func:
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
 
     with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=console
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
     ) as progress:
         task = progress.add_task(task_desc, total=len(items))
 
@@ -158,7 +165,9 @@ async def run_matching_tasks_async(task_desc: str, items: list[Any], match_func:
                 tg.create_task(_bounded_task(item))
 
 
-async def run_headless_tasks_async(items: list[Any], task_func: Callable[[Any], Awaitable[Any]]) -> None:
+async def run_headless_tasks_async(
+    items: list[Any], task_func: Callable[[Any], Awaitable[Any]]
+) -> None:
     """
     Executes a list of asynchronous tasks concurrently without terminal UI feedback.
 

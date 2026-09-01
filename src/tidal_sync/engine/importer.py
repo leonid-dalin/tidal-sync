@@ -10,28 +10,26 @@ fallbacks, and orchestrates the upload queues.
 import asyncio
 from pathlib import Path
 from typing import Any, cast
+
 import tidalapi
 from loguru import logger
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
-from ..domain.models import TrackRow, AlbumRow
-from ..domain.protocols import TidalUser, CHUNK_SIZE
 from ..domain.logger import setup_audit_logging
-
+from ..domain.models import AlbumRow, TrackRow
+from ..domain.protocols import CHUNK_SIZE, TidalUser
+from .bisection import upload_batch_with_bisection_recovery
+from .folders import assign_playlist_to_v2_folder, ensure_v2_folder_exists
 from .network import execute_network, fetch_all_async
 from .parser import parse_csv
 from .workers import ImportStats, handle_match_result_async, run_matching_tasks_async
-from .folders import ensure_v2_folder_exists, assign_playlist_to_v2_folder
-from .bisection import upload_batch_with_bisection_recovery
 
 console = Console()
 
 
 async def import_collection_from_disk(
-        session: tidalapi.Session,
-        target_path: Path,
-        target_playlist_name: str | None = None
+    session: tidalapi.Session, target_path: Path, target_playlist_name: str | None = None
 ) -> None:
     """
     Coordinates the bulk ingestion of metadata into the authenticated account.
@@ -50,7 +48,7 @@ async def import_collection_from_disk(
     logger.bind(audit=True).info("Import Job Started", target=str(target_path))
 
     if target_path.is_file():
-        if target_path.suffix.lower() == '.csv':
+        if target_path.suffix.lower() == ".csv":
             await resolve_and_import_playlist(session, target_path, target_playlist_name, stats)
         else:
             logger.error("Skipped non-CSV file", path=str(target_path))
@@ -62,7 +60,7 @@ async def import_collection_from_disk(
     else:
         logger.error("Path not found", path=str(target_path))
 
-    console.print(f"\n[bold yellow]Audit Report Generated:[/bold yellow]")
+    console.print("\n[bold yellow]Audit Report Generated:[/bold yellow]")
     console.print(f"  • {stats.added} items successfully imported")
     console.print(f"  • {stats.skipped} items skipped (already owned/duplicates)")
     console.print(f"  • {stats.failed} items failed (could not be found on Tidal)")
@@ -70,10 +68,7 @@ async def import_collection_from_disk(
 
 
 async def resolve_and_import_playlist(
-        session: tidalapi.Session,
-        file_path: Path,
-        fallback_name: str | None,
-        stats: ImportStats
+    session: tidalapi.Session, file_path: Path, fallback_name: str | None, stats: ImportStats
 ) -> None:
     """
     Routes a specific CSV file to its appropriate category importer.
@@ -106,17 +101,21 @@ async def resolve_and_import_playlist(
     else:
         p_name = fallback_name or file_path.stem
         await import_tracks_category_async(
-            session, file_path, stats,
-            is_favorites=False, playlist_name=p_name, folder_name=folder_name
+            session,
+            file_path,
+            stats,
+            is_favorites=False,
+            playlist_name=p_name,
+            folder_name=folder_name,
         )
 
 
 async def resolve_track_to_id(
-        session: Any,
-        track_name: str,
-        artist_name: str,
-        tidal_id: str | None = None,
-        isrc: str | None = None,
+    session: Any,
+    track_name: str,
+    artist_name: str,
+    tidal_id: str | None = None,
+    isrc: str | None = None,
 ) -> str | None:
     """Resolves one track to a Tidal id, or None when nothing matches.
 
@@ -145,12 +144,12 @@ async def resolve_track_to_id(
 
 
 async def import_tracks_category_async(
-        session: tidalapi.Session,
-        file_path: Path,
-        stats: ImportStats,
-        is_favorites: bool = False,
-        playlist_name: str | None = None,
-        folder_name: str | None = None
+    session: tidalapi.Session,
+    file_path: Path,
+    stats: ImportStats,
+    is_favorites: bool = False,
+    playlist_name: str | None = None,
+    folder_name: str | None = None,
 ) -> None:
     """
     Translates local track metadata into UUIDs and orchestrates batch uploads.
@@ -177,7 +176,7 @@ async def import_tracks_category_async(
 
     # 1. Deduplication and target acquisition
     with console.status(f"[cyan]Scanning existing items in '{dest_name}'...[/cyan]"):
-        if is_favorites and hasattr(user, 'favorites'):
+        if is_favorites and hasattr(user, "favorites"):
             existing_track_ids = {str(t.id) for t in await fetch_all_async(user.favorites.tracks)}
         elif not is_favorites and playlist_name:
             existing_playlists = await fetch_all_async(user.playlists)
@@ -186,7 +185,9 @@ async def import_tracks_category_async(
             if playlist:
                 existing_track_ids = {str(t.id) for t in await fetch_all_async(playlist.tracks)}
             else:
-                playlist = await execute_network(user.create_playlist, playlist_name, "Imported via tidal-sync <3")
+                playlist = await execute_network(
+                    user.create_playlist, playlist_name, "Imported via tidal-sync <3"
+                )
 
             if folder_name and playlist:
                 folder_id = await ensure_v2_folder_exists(session, folder_name)
@@ -213,12 +214,21 @@ async def import_tracks_category_async(
             staged_tracks_map[matched_id] = track
 
         await handle_match_result_async(
-            matched_id, "Track", track.track_name, track.artist_name,
-            file_path.name, str(dest_name), existing_track_ids, stats,
-            ids_to_add=track_ids_to_add, failure_reason=failure_reason
+            matched_id,
+            "Track",
+            track.track_name,
+            track.artist_name,
+            file_path.name,
+            str(dest_name),
+            existing_track_ids,
+            stats,
+            ids_to_add=track_ids_to_add,
+            failure_reason=failure_reason,
         )
 
-    await run_matching_tasks_async(f"Matching {len(tracks)} tracks...", tracks, _resolve_track_metadata_to_id)
+    await run_matching_tasks_async(
+        f"Matching {len(tracks)} tracks...", tracks, _resolve_track_metadata_to_id
+    )
 
     # 3. Fault-tolerant batch uploading
     if track_ids_to_add:
@@ -226,7 +236,7 @@ async def import_tracks_category_async(
 
         async def _upload_chunk_async(batch: list[str]) -> None:
             nonlocal playlist
-            if is_favorites and hasattr(user, 'favorites'):
+            if is_favorites and hasattr(user, "favorites"):
                 for tid in batch:
                     await execute_network(user.favorites.add_track, tid)
             elif playlist:
@@ -234,17 +244,25 @@ async def import_tracks_category_async(
                 await execute_network(playlist.add, batch)
 
         with Progress(
-                SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
-                BarColumn(), TaskProgressColumn(), console=console
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
         ) as progress_ui:
             add_task = progress_ui.add_task("Uploading...", total=len(track_ids_to_add))
 
             for i in range(0, len(track_ids_to_add), CHUNK_SIZE):
-                chunk = track_ids_to_add[i:i + CHUNK_SIZE]
+                chunk = track_ids_to_add[i : i + CHUNK_SIZE]
 
                 await upload_batch_with_bisection_recovery(
-                    chunk, _upload_chunk_async, stats, staged_tracks_map,
-                    str(dest_name), progress_ui, add_task
+                    chunk,
+                    _upload_chunk_async,
+                    stats,
+                    staged_tracks_map,
+                    str(dest_name),
+                    progress_ui,
+                    add_task,
                 )
 
     console.print(
@@ -256,7 +274,9 @@ async def import_tracks_category_async(
     )
 
 
-async def import_albums_async(session: tidalapi.Session, file_path: Path, stats: ImportStats) -> None:
+async def import_albums_async(
+    session: tidalapi.Session, file_path: Path, stats: ImportStats
+) -> None:
     """
     Matches and saves albums to the user's 'Liked Albums' collection.
 
@@ -271,7 +291,7 @@ async def import_albums_async(session: tidalapi.Session, file_path: Path, stats:
     user = cast(TidalUser, cast(object, session.user))
 
     # Guard clause to ensure favorites exists
-    if not hasattr(user, 'favorites'):
+    if not hasattr(user, "favorites"):
         logger.error("User profile does not support favorites.")
         return
 
@@ -298,13 +318,18 @@ async def import_albums_async(session: tidalapi.Session, file_path: Path, stats:
         failure_reason = "Text search failed" if not matched_id else "N/A"
 
         await handle_match_result_async(
-            matched_id, "Album", album.album_name, album.artist_name,
-            file_path.name, "Liked Albums", existing_album_ids, stats,
+            matched_id,
+            "Album",
+            album.album_name,
+            album.artist_name,
+            file_path.name,
+            "Liked Albums",
+            existing_album_ids,
+            stats,
             add_method=_async_add,
-            failure_reason=failure_reason
+            failure_reason=failure_reason,
         )
 
-    await run_matching_tasks_async(f"Matching & Adding {len(albums)} albums...", albums, _match_and_add_album_async)
-
-
-
+    await run_matching_tasks_async(
+        f"Matching & Adding {len(albums)} albums...", albums, _match_and_add_album_async
+    )

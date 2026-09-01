@@ -39,14 +39,15 @@ Attributes:
     console (Console): Rich console instance for terminal output.
 """
 
-import os
 import json
+import os
 import secrets
 import stat
-import tidalapi
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import cast
+
+import tidalapi
 from rich.console import Console
 
 from .domain.exceptions import TidalAuthenticationError
@@ -83,14 +84,15 @@ def _get_all_profiles() -> dict[str, int]:
             an empty dictionary if the config directory is missing or empty.
     """
     profiles: dict[str, int] = {}
-    if not CONFIG_DIR.exists(): return profiles
+    if not CONFIG_DIR.exists():
+        return profiles
 
     for file in CONFIG_DIR.glob("*.json"):
         try:
-            with open(file, 'r') as f:
+            with open(file) as f:
                 data = json.load(f)
-                if 'user_id' in data:
-                    profiles[file.stem] = data['user_id']
+                if "user_id" in data:
+                    profiles[file.stem] = data["user_id"]
         except (json.JSONDecodeError, OSError):
             continue
 
@@ -109,14 +111,14 @@ def _save_session_to_disk(session: tidalapi.Session, token_file: Path) -> None:
         token_file (Path): The destination file path.
     """
     token_data = {
-        'token_type': session.token_type,
-        'access_token': session.access_token,
-        'refresh_token': session.refresh_token,
-        'expiry_time': session.expiry_time.isoformat() if session.expiry_time else None,
-        'user_id': session.user.id
+        "token_type": session.token_type,
+        "access_token": session.access_token,
+        "refresh_token": session.refresh_token,
+        "expiry_time": session.expiry_time.isoformat() if session.expiry_time else None,
+        "user_id": session.user.id,
     }
 
-    with open(token_file, 'w') as f:
+    with open(token_file, "w") as f:
         json.dump(token_data, f)
 
     # Enforce strict file permissions: Read/Write for Owner ONLY (Linux/macOS)
@@ -152,12 +154,14 @@ def get_session(profile: str = "default") -> tidalapi.Session:
     # 1. Attempt to load an existing session
     if token_file.exists():
         try:
-            with open(token_file, 'r') as f:
+            with open(token_file) as f:
                 data = json.load(f)
-                expiry = datetime.fromisoformat(data['expiry_time']) if data.get('expiry_time') else None
+                expiry = (
+                    datetime.fromisoformat(data["expiry_time"]) if data.get("expiry_time") else None
+                )
 
             session.load_oauth_session(
-                data['token_type'], data['access_token'], data['refresh_token'], expiry
+                data["token_type"], data["access_token"], data["refresh_token"], expiry
             )
 
             if session.check_login():
@@ -165,20 +169,24 @@ def get_session(profile: str = "default") -> tidalapi.Session:
                 console.print(f"[green]Authenticated as profile: [bold]{profile}[/bold][/green]")
                 return session
         except (json.JSONDecodeError, KeyError, ValueError, OSError):
-            console.print(f"[yellow]Profile '{profile}' invalid or expired. Re-authenticating...[/yellow]")
+            console.print(
+                f"[yellow]Profile '{profile}' invalid or expired. Re-authenticating...[/yellow]"
+            )
 
     # 2. Initiate a new OAuth login flow
     console.print(f"[cyan]Logging in to profile: [bold]{profile}[/bold][/cyan]")
     session.login_oauth_simple()
 
     user = cast(TidalUser, cast(object, session.user))
-    if not user or getattr(user, 'id', None) is None:
-        raise TidalAuthenticationError("[red]Critical Error: Tidal API did not return a valid user object.[/red]")
+    if not user or getattr(user, "id", None) is None:
+        raise TidalAuthenticationError(
+            "[red]Critical Error: Tidal API did not return a valid user object.[/red]"
+        )
 
     # 3. Collision Detection: Check if this Tidal account is already tied to another profile
     existing_profiles = _get_all_profiles()
     if any(p != profile and uid == user.id for p, uid in existing_profiles.items()):
-        console.print(f"\n[bold red]⚠️ WARNING:[/bold red] Account collision detected!")
+        console.print("\n[bold red]⚠️ WARNING:[/bold red] Account collision detected!")
 
     # 4. Save and return
     _save_session_to_disk(session, token_file)
@@ -209,13 +217,13 @@ def secure_delete_token(profile: str = "default") -> None:
         with open(token_file, "r+b") as f:
             # Pass 1: Overwrite with null bytes
             f.seek(0)
-            f.write(b'\x00' * file_size)
+            f.write(b"\x00" * file_size)
             f.flush()
             os.fsync(f.fileno())
 
             # Pass 2: Verify to overwrite succeeded
             f.seek(0)
-            if f.read() != b'\x00' * file_size:
+            if f.read() != b"\x00" * file_size:
                 console.print("[red]Verification failed: Logical overwrite incomplete.[/red]")
 
         # Obfuscate the filename before final deletion to wipe file metadata traces

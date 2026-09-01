@@ -16,6 +16,7 @@
 # Contact: infoLeonid@protonMail.com
 from enum import StrEnum
 
+
 class ClearTarget(StrEnum):
     """
     Valid targets for the CLI clear command.
@@ -23,6 +24,7 @@ class ClearTarget(StrEnum):
     Using a StrEnum provides native Typer validation and terminal autocomplete,
     preventing users from passing unsupported category strings.
     """
+
     ALL = "all"
     TRACKS = "tracks"
     ALBUMS = "albums"

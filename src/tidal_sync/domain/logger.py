@@ -45,17 +45,18 @@ Note:
     pre-serializing the JSON and stashing it inside the record's `extra`
     dictionary before yielding it to the sink.
 """
-import sys
-import orjson
+
 import re
-from pathlib import Path
+import sys
 from datetime import datetime
-from loguru import logger
+from pathlib import Path
 from typing import Any
 
+import orjson
+from loguru import logger
 
 REDACT_PATTERNS = [
-    (re.compile(r'sessionId=[a-zA-Z0-9-]+'), 'sessionId=[REDACTED]'),
+    (re.compile(r"sessionId=[a-zA-Z0-9-]+"), "sessionId=[REDACTED]"),
 ]
 
 
@@ -72,16 +73,20 @@ def json_formatter(record: Any) -> str:
         if isinstance(error_val, str):
             error_val = pattern.sub(replacement, error_val)
 
-    clean_extra = {k: v for k, v in record["extra"].items() if k not in ("audit", "serialized", "error")}
+    clean_extra = {
+        k: v for k, v in record["extra"].items() if k not in ("audit", "serialized", "error")
+    }
     if error_val is not None:
         clean_extra["error"] = error_val
 
-    record["extra"]["serialized"] = orjson.dumps({
-        "timestamp": record["time"].strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
-        "level": record["level"].name.lower(),
-        "message": message,
-        "extra": clean_extra
-    }).decode()
+    record["extra"]["serialized"] = orjson.dumps(
+        {
+            "timestamp": record["time"].strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+            "level": record["level"].name.lower(),
+            "message": message,
+            "extra": clean_extra,
+        }
+    ).decode()
 
     return "{extra[serialized]}\n"
 
@@ -89,9 +94,7 @@ def json_formatter(record: Any) -> str:
 def setup_global_logging() -> None:
     logger.remove()
     logger.add(
-        sys.stderr,
-        level="WARNING",
-        filter=lambda record: not record["extra"].get("audit", False)
+        sys.stderr, level="WARNING", filter=lambda record: not record["extra"].get("audit", False)
     )
 
 
@@ -108,6 +111,6 @@ def setup_audit_logging(report_dir: Path) -> Path:
         rotation="10 MB",
         retention="7 days",
         compression="gz",
-        enqueue=True
+        enqueue=True,
     )
     return log_file

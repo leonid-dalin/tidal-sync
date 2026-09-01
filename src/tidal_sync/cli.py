@@ -28,34 +28,37 @@ Example:
 """
 
 import asyncio
-import typer
 from pathlib import Path
 from typing import Annotated
-from rich.console import Console
-from loguru import logger
 
-from .domain.logger import setup_global_logging
+import typer
+from loguru import logger
+from rich.console import Console
+
+from .auth import _get_all_profiles, get_session, secure_delete_token
 from .domain.enums import ClearTarget
 from .domain.exceptions import TidalAuthenticationError
-from .auth import get_session, secure_delete_token, _get_all_profiles
-
-from .engine.importer import import_collection_from_disk
+from .domain.logger import setup_global_logging
 from .engine.exporter import (
-    export_user_playlists_to_disk,
+    export_algorithmic_mixes_to_disk,
     export_user_favourites_to_disk,
-    export_algorithmic_mixes_to_disk
+    export_user_playlists_to_disk,
 )
+from .engine.importer import import_collection_from_disk
 from .engine.wiping import purge_target_category_async
 
-
-app = typer.Typer(help="Modern CLI for managing, importing, exporting, and cloning Tidal libraries.")
+app = typer.Typer(
+    help="Modern CLI for managing, importing, exporting, and cloning Tidal libraries."
+)
 console = Console()
 setup_global_logging()
 
 
 @app.command()
 def login(
-    profile: Annotated[str, typer.Option("--profile", "-p", help="Profile name for dual-account management")] = "default"
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Profile name for dual-account management")
+    ] = "default",
 ) -> None:
     """
     Authenticates a Tidal account and saves it to a local profile.
@@ -70,12 +73,14 @@ def login(
         get_session(profile)
     except TidalAuthenticationError as e:
         console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
 def logout(
-    profile: Annotated[str, typer.Option("--profile", "-p", help="Profile name to wipe")] = "default"
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Profile name to wipe")
+    ] = "default",
 ) -> None:
     """
     Securely logs out and wipes session credentials for a specific profile.
@@ -88,9 +93,13 @@ def logout(
 
 @app.command(name="import")
 def import_data(
-    target_path: Annotated[Path, typer.Argument(help="Path to a CSV file OR a directory", exists=True)],
+    target_path: Annotated[
+        Path, typer.Argument(help="Path to a CSV file OR a directory", exists=True)
+    ],
     name: Annotated[str | None, typer.Option("--name", "-n", help="Target playlist name")] = None,
-    profile: Annotated[str, typer.Option("--profile", "-p", help="Which account profile to import into")] = "default"
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to import into")
+    ] = "default",
 ) -> None:
     """
     Ingests CSV metadata and synchronises it with a Tidal account.
@@ -113,8 +122,12 @@ def import_data(
 
 @app.command(name="export")
 def export_all(
-    output_dir: Annotated[Path, typer.Option("--out", "-o", help="Output directory")] = Path("./exports"),
-    profile: Annotated[str, typer.Option("--profile", "-p", help="Which account profile to export from")] = "default"
+    output_dir: Annotated[Path, typer.Option("--out", "-o", help="Output directory")] = Path(
+        "./exports"
+    ),
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to export from")
+    ] = "default",
 ) -> None:
     """
     Backs up the entire Tidal library to local CSV files.
@@ -140,8 +153,10 @@ def export_all(
 @app.command()
 def clear(
     target: Annotated[ClearTarget, typer.Argument(help="What to clear")],
-    profile: Annotated[str, typer.Option("--profile", "-p", help="Which account profile to clear")] = "default",
-    force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt")] = False
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to clear")
+    ] = "default",
+    force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt")] = False,
 ) -> None:
     """
     Destructively removes a specific category of data from a Tidal account.
@@ -156,8 +171,9 @@ def clear(
     """
     if not force:
         typer.confirm(
-            f"Are you absolutely sure you want to permanently delete {target} from the '{profile}' profile?",
-            abort=True
+            f"Are you absolutely sure you want to permanently delete {target} "
+            f"from the '{profile}' profile?",
+            abort=True,
         )
 
     try:
@@ -165,7 +181,7 @@ def clear(
         asyncio.run(purge_target_category_async(session, target))
     except TidalAuthenticationError as e:
         console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command(name="profiles")
@@ -183,6 +199,7 @@ def list_profiles() -> None:
     for profile_name, user_id in profiles.items():
         console.print(f"  • [bold green]{profile_name}[/bold green] (User ID: {user_id})")
     console.print("")
+
 
 if __name__ == "__main__":
     app()

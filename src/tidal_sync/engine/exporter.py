@@ -8,8 +8,10 @@ the user's cloud-based folder hierarchy on their local filesystem.
 """
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast, Callable
+from typing import Any, cast
+
 import tidalapi
 from loguru import logger
 from rich.console import Console
@@ -17,21 +19,18 @@ from rich.console import Console
 from ..domain.protocols import TidalUser
 from .network import execute_network, fetch_all_async, fetch_blocked_artists
 from .parser import (
+    normalises_playlist_id,
+    sanitize_filename,
     write_albums_csv_sync,
     write_artists_csv_sync,
     write_tracks_csv_sync,
-    sanitize_filename,
-    normalises_playlist_id
 )
 
 console = Console()
 
 
 async def fetch_and_serialise_tracks(
-        name: str,
-        target_dir: Path,
-        fetch_items_coro: Any,
-        log_type: str
+    name: str, target_dir: Path, fetch_items_coro: Any, log_type: str
 ) -> None:
     """
     Retrieves track metadata from the network and offloads file writing to the disk.
@@ -82,7 +81,7 @@ async def build_playlist_folder_map(session: tidalapi.Session) -> dict[str, str]
         "order": "DATE",
         "orderDirection": "DESC",
         "locale": "en_US",
-        "limit": 50
+        "limit": 50,
     }
 
     try:
@@ -93,8 +92,11 @@ async def build_playlist_folder_map(session: tidalapi.Session) -> dict[str, str]
             folder_params.update({"includeOnly": "FOLDER", "offset": offset})
 
             folder_res = await execute_network(
-                session.request.request, "GET", "my-collection/playlists/folders/flattened",
-                params=folder_params, base_url=session.config.api_v2_location
+                session.request.request,
+                "GET",
+                "my-collection/playlists/folders/flattened",
+                params=folder_params,
+                base_url=session.config.api_v2_location,
             )
 
             if not folder_res.ok:
@@ -126,8 +128,11 @@ async def build_playlist_folder_map(session: tidalapi.Session) -> dict[str, str]
                 content_params.update({"folderId": folder_id, "offset": c_offset})
 
                 content_res = await execute_network(
-                    session.request.request, "GET", "my-collection/playlists/folders",
-                    params=content_params, base_url=session.config.api_v2_location
+                    session.request.request,
+                    "GET",
+                    "my-collection/playlists/folders",
+                    params=content_params,
+                    base_url=session.config.api_v2_location,
                 )
 
                 if not content_res.ok:
@@ -172,7 +177,7 @@ async def export_user_favourites_to_disk(session: tidalapi.Session, base_dir: Pa
         base_dir (Path): The root output directory for the backup.
     """
     user = cast(TidalUser, cast(object, session.user))
-    if not hasattr(user, 'favorites'):
+    if not hasattr(user, "favorites"):
         return
 
     async def _export_songs():
@@ -279,21 +284,26 @@ async def export_algorithmic_mixes_to_disk(session: tidalapi.Session, base_dir: 
     try:
         all_stations = []
 
-        if hasattr(user, 'favorites'):
-            if hasattr(user.favorites, 'mixes'):
+        if hasattr(user, "favorites"):
+            if hasattr(user.favorites, "mixes"):
                 mixes_func = user.favorites.mixes
                 mixes = await execute_network(mixes_func) if callable(mixes_func) else mixes_func
-                if isinstance(mixes, list): all_stations.extend(mixes)
+                if isinstance(mixes, list):
+                    all_stations.extend(mixes)
 
-            if hasattr(user.favorites, 'radios'):
+            if hasattr(user.favorites, "radios"):
                 radios_func = user.favorites.radios
-                radios = await execute_network(radios_func) if callable(radios_func) else radios_func
-                if isinstance(radios, list): all_stations.extend(radios)
+                radios = (
+                    await execute_network(radios_func) if callable(radios_func) else radios_func
+                )
+                if isinstance(radios, list):
+                    all_stations.extend(radios)
 
-        if not all_stations and hasattr(session, 'mixes'):
+        if not all_stations and hasattr(session, "mixes"):
             mixes_func = session.mixes
             mixes = await execute_network(mixes_func) if callable(mixes_func) else mixes_func
-            if isinstance(mixes, list): all_stations.extend(mixes)
+            if isinstance(mixes, list):
+                all_stations.extend(mixes)
 
         if not all_stations:
             return
@@ -302,24 +312,30 @@ async def export_algorithmic_mixes_to_disk(session: tidalapi.Session, base_dir: 
 
         async with asyncio.TaskGroup() as tg:
             for station in all_stations:
-                station_name = getattr(station, 'title',
-                                       getattr(station, 'name', getattr(station, 'id', 'Unknown Station')))
+                station_name = getattr(
+                    station,
+                    "title",
+                    getattr(station, "name", getattr(station, "id", "Unknown Station")),
+                )
                 fetch_target = None
 
-                for attr in ('get_items', 'get_tracks', 'items', 'tracks'):
+                for attr in ("get_items", "get_tracks", "items", "tracks"):
                     if hasattr(station, attr):
                         fetch_target = getattr(station, attr)
                         break
 
                 if fetch_target is None and type(station).__name__ == "MixV2":
+
                     def _get_v2_items(st=station):
-                        if not getattr(st, '_retrieved', False): st.get()
-                        return getattr(st, '_items', []) or []
+                        if not getattr(st, "_retrieved", False):
+                            st.get()
+                        return getattr(st, "_items", []) or []
 
                     fetch_target = _get_v2_items
 
                 if fetch_target is not None:
                     if isinstance(fetch_target, list):
+
                         def _wrap_list(items: list[Any]) -> Callable[..., list[Any]]:
                             return lambda **kwargs: items
 
@@ -328,10 +344,14 @@ async def export_algorithmic_mixes_to_disk(session: tidalapi.Session, base_dir: 
                         safe_fetch = fetch_target
 
                     tg.create_task(
-                        fetch_and_serialise_tracks(str(station_name), target_dir, safe_fetch, "Mix/Radio")
+                        fetch_and_serialise_tracks(
+                            str(station_name), target_dir, safe_fetch, "Mix/Radio"
+                        )
                     )
                 else:
-                    logger.warning(f"Station '{station_name}' has no track parsing function available.")
+                    logger.warning(
+                        f"Station '{station_name}' has no track parsing function available."
+                    )
 
     except Exception as e:
         logger.error("Failed to fetch algorithmic stations", error=str(e))

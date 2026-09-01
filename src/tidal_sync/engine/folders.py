@@ -8,10 +8,11 @@ frequently returns empty HTTP response bodies upon success.
 """
 
 import asyncio
-import requests
 from typing import Any
-from loguru import logger
+
+import requests
 import tidalapi
+from loguru import logger
 from rich.console import Console
 
 from .parser import normalises_playlist_id
@@ -46,10 +47,7 @@ async def ensure_v2_folder_exists(session: tidalapi.Session, folder_name: str) -
 
     base_v2_url = "https://api.tidal.com/v2"
 
-    headers = {
-        "Authorization": f"Bearer {session.access_token}",
-        "Accept": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {session.access_token}", "Accept": "application/json"}
 
     # 1. Check if the folder already exists (Raw Requests Bypass)
     offset = 0
@@ -57,11 +55,12 @@ async def ensure_v2_folder_exists(session: tidalapi.Session, folder_name: str) -
         params = base_params.copy()
         params.update({"includeOnly": "FOLDER", "offset": offset, "limit": 50})
         try:
-            def _fetch_folders():
+
+            def _fetch_folders(params=params):
                 return requests.get(
                     f"{base_v2_url}/my-collection/playlists/folders/flattened",
                     params=params,
-                    headers=headers
+                    headers=headers,
                 )
 
             res = await asyncio.to_thread(_fetch_folders)
@@ -96,18 +95,15 @@ async def ensure_v2_folder_exists(session: tidalapi.Session, folder_name: str) -
 
     # 2. Create a new folder mimicking the Web Player's behaviour
     create_params = base_params.copy()
-    create_params.update({
-        "folderId": "root",
-        "name": folder_name,
-        "trns": ""
-    })
+    create_params.update({"folderId": "root", "name": folder_name, "trns": ""})
 
     try:
+
         def _execute_create():
             return requests.put(
                 f"{base_v2_url}/my-collection/playlists/folders/create-folder",
                 params=create_params,
-                headers=headers
+                headers=headers,
             )
 
         res = await asyncio.to_thread(_execute_create)
@@ -130,7 +126,9 @@ async def ensure_v2_folder_exists(session: tidalapi.Session, folder_name: str) -
     return None
 
 
-async def assign_playlist_to_v2_folder(session: tidalapi.Session, playlist_id: str, folder_id: str) -> None:
+async def assign_playlist_to_v2_folder(
+    session: tidalapi.Session, playlist_id: str, folder_id: str
+) -> None:
     """
     Moves a specified playlist into a designated V2 folder directory.
 
@@ -150,7 +148,7 @@ async def assign_playlist_to_v2_folder(session: tidalapi.Session, playlist_id: s
         "folderId": folder_id,
         "trns": trn_playlist,
         "deviceType": "BROWSER",
-        "locale": "en_US"
+        "locale": "en_US",
     }
 
     if hasattr(session, "country_code") and session.country_code:
@@ -159,16 +157,17 @@ async def assign_playlist_to_v2_folder(session: tidalapi.Session, playlist_id: s
     headers = {
         "Authorization": f"Bearer {session.access_token}",
         "Accept": "application/json",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
     try:
+
         def _execute_move():
             return requests.put(
                 "https://api.tidal.com/v2/my-collection/playlists/folders/move",
                 params=params,
                 headers=headers,
-                data=b''
+                data=b"",
             )
 
         res = await asyncio.to_thread(_execute_move)

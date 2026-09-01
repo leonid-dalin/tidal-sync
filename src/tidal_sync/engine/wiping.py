@@ -9,10 +9,12 @@ are properly eradicated.
 """
 
 import asyncio
+from collections.abc import Callable
+from typing import Any, cast
+
 import requests
-from typing import Any, Callable, cast
-from loguru import logger
 import tidalapi
+from loguru import logger
 from rich.console import Console
 
 from ..domain.enums import ClearTarget
@@ -42,10 +44,7 @@ async def _purge_v2_folders_async(session: tidalapi.Session) -> None:
     base_v2_url = "https://api.tidal.com/v2"
     folders_to_delete = []
 
-    headers = {
-        "Authorization": f"Bearer {session.access_token}",
-        "Accept": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {session.access_token}", "Accept": "application/json"}
 
     # 1. Fetch all existing folders (Bypassing tidalapi entirely)
     offset = 0
@@ -54,11 +53,12 @@ async def _purge_v2_folders_async(session: tidalapi.Session) -> None:
         params.update({"includeOnly": "FOLDER", "offset": offset, "limit": 50})
 
         try:
-            def _fetch_folders():
+
+            def _fetch_folders(params=params):
                 return requests.get(
                     f"{base_v2_url}/my-collection/playlists/folders/flattened",
                     params=params,
-                    headers=headers
+                    headers=headers,
                 )
 
             res = await asyncio.to_thread(_fetch_folders)
@@ -105,7 +105,7 @@ async def _purge_v2_folders_async(session: tidalapi.Session) -> None:
                 f"{base_v2_url}/my-collection/playlists/folders/remove",
                 params=delete_params,
                 headers=del_headers,
-                data=b''  # Forces Content-Length: 0
+                data=b"",  # Forces Content-Length: 0
             )
 
         try:
@@ -134,13 +134,13 @@ async def purge_target_category_async(session: tidalapi.Session, target: ClearTa
         target (ClearTarget): The specific library segment to wipe.
     """
     user = cast(TidalUser, cast(object, session.user))
-    if not hasattr(user, 'favorites'):
+    if not hasattr(user, "favorites"):
         return
 
     async def _clear_category_async(
-            items: list[Any],
-            sync_action_factory: Callable[[Any], Callable[[], Any]],
-            category_name: str
+        items: list[Any],
+        sync_action_factory: Callable[[Any], Callable[[], Any]],
+        category_name: str,
     ) -> None:
         if not items:
             return
@@ -166,25 +166,31 @@ async def purge_target_category_async(session: tidalapi.Session, target: ClearTa
     # 2. Clear Tracks
     if target in (ClearTarget.ALL, ClearTarget.TRACKS):
         tracks = await fetch_all_async(user.favorites.tracks)
-        await _clear_category_async(tracks, lambda t: lambda: user.favorites.remove_track(str(t.id)), "liked songs")
+        await _clear_category_async(
+            tracks, lambda t: lambda: user.favorites.remove_track(str(t.id)), "liked songs"
+        )
 
     # 3. Clear Albums
     if target in (ClearTarget.ALL, ClearTarget.ALBUMS):
         albums = await fetch_all_async(user.favorites.albums)
-        await _clear_category_async(albums, lambda a: lambda: user.favorites.remove_album(str(a.id)), "liked albums")
+        await _clear_category_async(
+            albums, lambda a: lambda: user.favorites.remove_album(str(a.id)), "liked albums"
+        )
 
     # 4. Clear Artists & Blocklist
     if target in (ClearTarget.ALL, ClearTarget.ARTISTS):
         artists = await fetch_all_async(user.favorites.artists)
-        await _clear_category_async(artists, lambda art: lambda: user.favorites.remove_artist(str(art.id)), "artists")
+        await _clear_category_async(
+            artists, lambda art: lambda: user.favorites.remove_artist(str(art.id)), "artists"
+        )
 
         try:
             blocked = await execute_network(fetch_blocked_artists, session)
             if blocked:
+
                 def _unblock_factory(art):
                     return lambda: session.request.request(
-                        "DELETE",
-                        f"users/{user.id}/blocks/artists/{art.id}"
+                        "DELETE", f"users/{user.id}/blocks/artists/{art.id}"
                     )
 
                 await _clear_category_async(blocked, _unblock_factory, "blocked artists")

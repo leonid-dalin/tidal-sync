@@ -25,8 +25,8 @@ Both profiles must point at different accounts.
 6. `tidal-sync import --profile acc-b ./acc-a`
 7. Re-export acc-b: `tidal-sync export --profile acc-b --out ./acc-b`
 8. Diff `./acc-a` against `./acc-b`. Counts must match.
-9. Confirm followed artists were restored. They were silently skipped
-   before Task 19.
+9. Confirm followed artists were restored. Followed artists were not
+   restored before this change.
 
 ## Clear
 

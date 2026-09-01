@@ -28,7 +28,7 @@ Features:
     - Token deletion via logical overwrite (zero-filling)
 
 Example:
-    >>> from auth import get_session, secure_delete_token
+    >>> from tidal_sync.auth import get_session, secure_delete_token
     >>> session = get_session('main_profile')
     >>> session.check_login()
     True

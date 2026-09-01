@@ -34,13 +34,13 @@ Manages destructive account clears via headless worker groups. It safely absorbs
 Isolates tracks Tidal refuses to accept during a batch upload. The module uploads a chunk, reads the `UploadOutcome` to drop tracks Tidal rejected server-side, and falls back to a per-item scan only when the whole chunk is refused. Auth, rate-limit, and server errors propagate rather than being blamed on a track.
 
 ### `folders.py`
-Provides raw HTTP interventions (mimicking browser/web-player headers) to manage V2 API folder creation, assignment, and fetching. This prevents JSON decoding crashes triggered when the standard `tidalapi` wrapper hits empty success response bodies.
+Provides raw HTTP interventions (mimicking browser/web-player headers) to manage V2 API folder creation, assignment, and fetching. `Requests.request()` returns the raw `Response` and never parses JSON, so the module calls the V2 endpoints directly rather than routing them through `tidalapi`. The empty body these calls send is the `Content-Length: 0` that Tidal's firewall requires, not a crash guard against parser failures.
 
 ### `network.py`
 Centralises all Tidal API calls. It uses a `GlobalTidalGate` to monitor for rate limits (429) or abuse flags (403). If Tidal throttles the tool, the gate instantly pauses all sibling workers, preventing account bans.
 
 ### `workers.py`
-Manages the asynchronous matching tasks. It bounds network throughput using an `asyncio.Semaphore`. It provides an `ImportStats` dataclass with async-safe locks to track the number of skipped, failed, and added items without race conditions.
+Manages the asynchronous matching tasks. It bounds network throughput using an `asyncio.Semaphore`. It provides an `ImportStats` dataclass with async-safe locks to track the number of skipped, failed, and added items without race conditions. Note that `cli.export_all` and `export_user_favourites_to_disk` still create bare `TaskGroup` fan-outs outside the semaphore (three to four tasks each), so the semaphore bounds the importer, not every export path.
 
 ### `parser.py`
 Reads and validates CSV files into Pydantic models. It tests multiple encodings (UTF-8-SIG, CP1252, Latin-1) to strip Byte Order Marks and scrubs null-byte corruption common in legacy music exports.

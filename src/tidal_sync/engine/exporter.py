@@ -45,6 +45,13 @@ async def fetch_and_serialise_tracks(
     and immediately passes the blocking I/O write operation to a background
     thread, preventing the async event loop from freezing during large backups.
 
+    Args:
+        name (str): Human-readable label for the collection being exported,
+            used in log lines.
+        target_dir (Path): Directory the serialised JSONL files are written to.
+        fetch_items_coro (Awaitable[list[Any]]): Coroutine that returns the
+            track items to serialise.
+        log_type (str): Tag recorded in the telemetry line for this export.
         allocator (UniquePathAllocator): Hands out non-colliding paths for
             this export run. Two collections sharing a name must not open
             the same file.
@@ -231,10 +238,13 @@ async def export_algorithmic_mixes_to_disk(session: tidalapi.Session, base_dir: 
         failures: list[str] = []
 
         async def _export_station(station: Any) -> None:
-            station_name = getattr(
-                station,
-                "title",
-                getattr(station, "name", getattr(station, "id", "Unknown Station")),
+            station_name = next(
+                (
+                    getattr(station, attr)
+                    for attr in ("title", "name", "id")
+                    if hasattr(station, attr)
+                ),
+                "Unknown Station",
             )
             fetch_target = None
 

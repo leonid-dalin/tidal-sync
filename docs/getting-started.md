@@ -51,7 +51,7 @@ When you run an import job, the tool automatically generates a machine-readable 
 
 To back up your custom playlists, liked songs, saved albums, and followed artists to a local folder:
 ```bash
-uv run tidal-sync export --out ./my_tidal_backup
+uv run tidal-sync export --out ./exports
 ```
 
 ### Cloning data to a new account

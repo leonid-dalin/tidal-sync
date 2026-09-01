@@ -11,7 +11,7 @@ he process begins when the CLI routes a file to the `import_tracks_category_asyn
 The `csv.DictReader` parses the rows, passing them into the Pydantic `TrackRow` model. This model standardises the data:
 * It maps legacy column headers (like "Artist Name(s)") to strict internal properties.
 * It drops malformed rows entirely, logging a validation error.
-* It computes a `search_query` property (stripping out secondary featured artists) to use as a fallback if strict database IDs fail.
+* It carries the raw `track_name` and `artist_name` so `resolve_track_to_id` can build a text fallback query when strict database IDs fail.
 
 ## 2. Concurrent matching engine
 
@@ -22,15 +22,15 @@ The tool fetches the target playlist (or the user's "Liked Songs") via `tidalapi
 For each track, an asynchronous task runs `_resolve_track_metadata_to_id`, attempting to find a match in this specific order:
 1. **Direct ID:** If the CSV contains a `tidal_id`, it uses it immediately.
 2. **ISRC Match:** If an International Standard Recording Code is present, it queries the Tidal API via `session.search(f"isrc:{track.isrc}")`. This ensures 1-to-1 high-fidelity matching regardless of region or naming variations.
-3. **Text Fallback:** It falls back to querying the API using the computed `search_query`.
+3. **Text Fallback:** It falls back to a text query built inside `resolve_track_to_id` from the track name and its primary artist, rather than a precomputed attribute.
 
-If the matched ID is already in the `existing_track_ids` set, the worker drops the track to prevent duplication. If it is a new match, the worker uses an `asyncio.Lock()` to safely append the ID to a shared `track_ids_to_add` list and increments the session's `added` counter. The lock strictly isolates local state changes, allowing actual network calls to run concurrently outside the lock.
+If the matched ID is already in the `existing_track_ids` set, the worker drops the track to prevent duplication. If it is a new match, `decide()` stages the id by appending it to a shared `track_ids_to_add` list and returns `STAGED`; the session's `added` counter is incremented later by `upload_recovery` once the server accepts the upload. The lock strictly isolates local state changes, allowing actual network calls to run concurrently outside the lock.
 
 ## 3. Chunked uploads
 
 Once all tracks are matched, the tool moves to the upload phase. The `tidalapi` limits bulk additions, and pushing too many IDs at once triggers an HTTP 413 (Payload Too Large) error.
 
-The tool slices the `track_ids_to_add` list into arrays of 50 (`CHUNK_SIZE`). It passes these chunks to either `user.favorites.add_track(batch)` or `playlist.add(batch)`. The `tidalapi` formats these lists into a comma-separated string and executes a single POST request per chunk.
+The tool slices the `track_ids_to_add` list into arrays of 50 (`CHUNK_SIZE`). For playlists it passes these chunks to `playlist.add(batch)`, which `tidalapi` formats into a comma-separated string and sends as a single POST per chunk. Favorites are added one track at a time: `_build_favorites_uploader` loops over the batch and calls `user.favorites.add_track(tid)` per id, stopping at the first rejection so the caller can resume from the failure.
 
 ## 4. Upload recovery (Fault recovery)
 

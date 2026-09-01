@@ -26,12 +26,11 @@ def _http_error(status: int, body: str = "") -> requests.HTTPError:
 class FakeBlockSession:
     """Records per-id block/unblock requests and fails on demand.
 
-    Modelled on `_BlockWireSession` below. `raise_for` triggers a one-shot
+    Modelled on `_BlockWireSession` above. `raise_for` triggers a one-shot
     HTTPError on the listed ids; `fail_times` raises the same status the
-    listed number of times, then lets the call succeed; `silent_noop` lets
-    the call return a 200 that the engine currently treats as success. The
-    request callable is a plain `def` because `execute_network` runs it
-    inside `asyncio.to_thread`.
+    listed number of times, then lets the call succeed. The request
+    callable is a plain `def` because `execute_network` runs it inside
+    `asyncio.to_thread`.
     """
 
     class _Config:
@@ -46,6 +45,7 @@ class FakeBlockSession:
         raise_for: dict[str, requests.HTTPError] | None = None,
         fail_times: dict[str, int] | None = None,
         fail_status: int = 503,
+        blocked: set[str] | None = None,
         silent_noop: set[str] | None = None,
     ):
         self.user_id = user_id
@@ -54,6 +54,7 @@ class FakeBlockSession:
         self._raise_for = raise_for or {}
         self._fail_times = fail_times or {}
         self._fail_status = fail_status
+        self.blocked = set(blocked) if blocked else set()
         self._silent_noop = silent_noop or set()
 
     @property
@@ -77,6 +78,12 @@ class FakeBlockSession:
                 session.calls.append((method, path, params, data, base_url))
                 session.attempts[artist_id] = session.attempts.get(artist_id, 0) + 1
 
+                if method == "GET":
+                    return _FakeResponse(list(session.blocked))
+
+                if artist_id in session._silent_noop:
+                    return _FakeResponse(True)
+
                 if artist_id in session._raise_for:
                     raise session._raise_for[artist_id]
 
@@ -85,17 +92,22 @@ class FakeBlockSession:
                     session._fail_times[artist_id] = remaining - 1
                     raise _http_error(session._fail_status, f"server said {session._fail_status}")
 
-                class _Resp:
-                    def __init__(self, ok):
-                        self.ok = ok
+                if method == "POST":
+                    session.blocked.add(artist_id)
+                elif method == "DELETE":
+                    session.blocked.discard(artist_id)
+                return _FakeResponse(True)
 
-                    def __bool__(self):
-                        return self.ok
-
-                ok = artist_id not in session._silent_noop
-                return _Resp(ok)
+            def map_request(self, endpoint, params=None, parse=None):
+                return [session.parse_artist({"id": item}) for item in sorted(session.blocked)]
 
         return _Req()
+
+    def parse_artist(self, item):
+        class _A:
+            id = str(item["id"]) if isinstance(item, dict) else str(item)
+
+        return _A()
 
 
 def test_upload_outcome_is_importable_from_domain():
@@ -196,10 +208,9 @@ async def test_empty_input_makes_no_requests():
 class _FakeResponse:
     """A requests.Response-like object that knows whether the call succeeded.
 
-    `ok=True` for the 200/204 the probe confirmed. `ok=False` stands in for
-    a 4xx: the engine records that id as rejected without aborting siblings.
-    `__bool__` mirrors `requests.Response` so `_apply_per_id`'s `bool(ok)`
-    sees `False` for a 4xx.
+    `ok=True` for the 200/204 the probe confirmed. `__bool__` mirrors
+    `requests.Response` so `_apply_per_id`'s `bool(ok)` sees `False` for
+    any response the fake flags as failed.
     """
 
     def __init__(self, ok: bool):
@@ -221,34 +232,7 @@ class _BlockWireSession:
         self.user_id = user_id
         self.calls: list[tuple] = []
         self._ok = ok
-
-    @property
-    def user(self):
-        return _FakeUser(self.user_id)
-
-    @property
-    def request(self):
-        session = self
-
-        class _Req:
-            def request(self, method, path, params=None, data=None, base_url=None):
-                session.calls.append((method, path, params, data, base_url))
-                return _FakeResponse(session._ok)
-
-        return _Req()
-
-
-class _SelectiveBlockWireSession:
-    """Per-id response control for the 4xx test.
-
-    Each id is reported as ok or not by the `ok_for` mapping; ids absent
-    from the map default to ok=True so the helper proceeds.
-    """
-
-    def __init__(self, user_id: int = 4242, ok_for: dict[str, bool] | None = None):
-        self.user_id = user_id
-        self.calls: list[tuple] = []
-        self._ok_for = ok_for or {}
+        self.blocked: set[str] = set()
 
     @property
     def user(self):
@@ -262,9 +246,64 @@ class _SelectiveBlockWireSession:
             def request(self, method, path, params=None, data=None, base_url=None):
                 session.calls.append((method, path, params, data, base_url))
                 artist_id = (data or {}).get("artistId")
-                return _FakeResponse(session._ok_for.get(artist_id, True))
+                if method == "POST" and artist_id:
+                    session.blocked.add(artist_id)
+                elif method == "DELETE":
+                    parts = path.rsplit("/", 1)
+                    if len(parts) == 2:
+                        session.blocked.discard(parts[1])
+                return _FakeResponse(session._ok)
+
+            def map_request(self, endpoint, params=None, parse=None):
+                return [session.parse_artist({"id": item}) for item in sorted(session.blocked)]
 
         return _Req()
+
+    def parse_artist(self, item):
+        return _BlockedArtist(int(item["id"]))
+
+
+class _SelectiveBlockWireSession:
+    """Per-id response control for the 4xx test.
+
+    Each id is reported as ok or not by the `ok_for` mapping; ids absent
+    from the map default to ok=True so the helper proceeds.
+    """
+
+    def __init__(self, user_id: int = 4242, ok_for: dict[str, bool] | None = None):
+        self.user_id = user_id
+        self.calls: list[tuple] = []
+        self._ok_for = ok_for or {}
+        self.blocked: set[str] = set()
+
+    @property
+    def user(self):
+        return _FakeUser(self.user_id)
+
+    @property
+    def request(self):
+        session = self
+
+        class _Req:
+            def request(self, method, path, params=None, data=None, base_url=None):
+                session.calls.append((method, path, params, data, base_url))
+                artist_id = (data or {}).get("artistId")
+                ok = session._ok_for.get(artist_id, True)
+                if ok and method == "POST" and artist_id:
+                    session.blocked.add(artist_id)
+                elif method == "DELETE":
+                    parts = path.rsplit("/", 1)
+                    if len(parts) == 2:
+                        session.blocked.discard(parts[1])
+                return _FakeResponse(ok)
+
+            def map_request(self, endpoint, params=None, parse=None):
+                return [session.parse_artist({"id": item}) for item in sorted(session.blocked)]
+
+        return _Req()
+
+    def parse_artist(self, item):
+        return _BlockedArtist(int(item["id"]))
 
 
 class _FakeUser:
@@ -440,3 +479,60 @@ async def test_a_400_is_this_ids_problem_and_the_others_still_apply():
 
     assert outcome.applied == ["1", "3"]
     assert outcome.rejected == ["2"]
+
+
+# --- Verify block writes by re-reading the blocklist, not by the 200 alone.
+#
+# The probe confirmed a 200 with an empty body. Trusting that status alone
+# is what the probe warned against: a future Tidal change could turn the
+# 200 into a silent no-op and the engine would report a successful block
+# that never happened. The reconciliation reads the blocklist once after
+# the write and moves ids that were reported applied but are absent into
+# rejected. For unblock the predicate inverts: an id still present was
+# not removed.
+
+
+async def test_a_200_that_did_nothing_lands_in_rejected_for_block():
+    """The probe warned that a 200 with no body could turn into a silent
+    no-op. The engine reads the blocklist after the writes and moves any
+    applied id that is not present into rejected.
+    """
+    session = FakeBlockSession()
+
+    import tidal_sync.engine.curation as cur_module
+
+    async def _stub(_session):
+        return ["1"]
+
+    original = cur_module.fetch_blocked_artist_ids
+    cur_module.fetch_blocked_artist_ids = _stub  # type: ignore[assignment]
+    try:
+        outcome = await curation.block_artists(session, ["1", "2"])
+    finally:
+        cur_module.fetch_blocked_artist_ids = original  # type: ignore[assignment]
+
+    assert outcome.applied == ["1"]
+    assert outcome.rejected == ["2"]
+
+
+async def test_an_id_still_in_the_blocklist_lands_in_rejected_for_unblock():
+    """The mirror case for unblock: a 204 that did not remove the id.
+    The engine reads the blocklist and moves any applied id that is still
+    present into rejected.
+    """
+    session = FakeBlockSession()
+
+    import tidal_sync.engine.curation as cur_module
+
+    async def _stub(_session):
+        return ["1", "2"]
+
+    original = cur_module.fetch_blocked_artist_ids
+    cur_module.fetch_blocked_artist_ids = _stub  # type: ignore[assignment]
+    try:
+        outcome = await curation.unblock_artists(session, ["1", "2"])
+    finally:
+        cur_module.fetch_blocked_artist_ids = original  # type: ignore[assignment]
+
+    assert outcome.rejected == ["1", "2"]
+    assert outcome.applied == []

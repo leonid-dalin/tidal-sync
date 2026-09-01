@@ -148,10 +148,13 @@ async def block_artists(session: tidalapi.Session, ids: list[str]) -> UploadOutc
 
     Probe confirmed (2026-09-01, throwaway account): POST
     users/{user_id}/blocks/artists with form field `artistId` returns 200
-    with an empty body. The follow-up GET is the network's job; this engine
-    trusts the per-id response.
+    with an empty body. The engine therefore reconciles the write against
+    the post-write blocklist: an id reported applied but not present
+    after the read was a silent no-op, not a success, and moves to
+    rejected.
     """
-    return await _apply_per_id(ids, _block_write_action(session, "POST", False), "Block artist")
+    outcome = await _apply_per_id(ids, _block_write_action(session, "POST", False), "Block artist")
+    return await _reconcile_block_write(session, outcome, expected_present=True)
 
 
 async def unblock_artists(session: tidalapi.Session, ids: list[str]) -> UploadOutcome:
@@ -160,9 +163,47 @@ async def unblock_artists(session: tidalapi.Session, ids: list[str]) -> UploadOu
     Probe confirmed (2026-09-01, throwaway account): DELETE
     users/{user_id}/blocks/artists/{artist_id} returns 204 with an empty
     body. The per-artist path is the correct shape; a body-bearing DELETE on
-    the collection would be a different surface.
+    the collection would be a different surface. The engine reconciles by
+    re-reading the blocklist: an id reported applied but still present
+    was not removed, so it moves to rejected.
     """
-    return await _apply_per_id(ids, _block_write_action(session, "DELETE", True), "Unblock artist")
+    outcome = await _apply_per_id(
+        ids, _block_write_action(session, "DELETE", True), "Unblock artist"
+    )
+    return await _reconcile_block_write(session, outcome, expected_present=False)
+
+
+async def _reconcile_block_write(
+    session: tidalapi.Session, outcome: UploadOutcome, *, expected_present: bool
+) -> UploadOutcome:
+    """Reconciles a block or unblock run against the post-write blocklist.
+
+    `expected_present=True` (block) treats an absent id as a silent no-op
+    and moves it from `applied` to `rejected`. `expected_present=False`
+    (unblock) inverts the check: an id that is still present was not
+    removed. The reconciliation is one read per invocation, not per id;
+    the audit's coverage walk accepts that for typical blocklist sizes.
+    Order is preserved on both buckets by walking the input list once.
+    """
+    if not outcome.applied:
+        return outcome
+
+    present = set(await fetch_blocked_artist_ids(session))
+    newly_rejected: list[str] = []
+    confirmed_applied: list[str] = []
+    for item_id in outcome.applied:
+        in_present = item_id in present
+        if (expected_present and not in_present) or (
+            not expected_present and in_present
+        ):
+            newly_rejected.append(item_id)
+        else:
+            confirmed_applied.append(item_id)
+
+    return UploadOutcome(
+        applied=confirmed_applied,
+        rejected=[*outcome.rejected, *newly_rejected],
+    )
 
 
 async def fetch_blocked_artist_ids(session: tidalapi.Session) -> list[str]:

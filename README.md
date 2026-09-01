@@ -1,3 +1,12 @@
+```text
+████████╗██╗ ██████╗  █████╗ ██╗             ███████╗██╗   ██╗███╗   ██╗ ██████╗ 
+╚══██╔══╝██║ ██╔══██╗██╔══██╗██║             ██╔════╝╚██╗ ██╔╝████╗  ██║██╔════╝ 
+   ██║   ██║ ██║  ██║███████║██║      █████╗ ███████╗ ╚████╔╝ ██╔██╗ ██║██║      
+   ██║   ██║ ██║  ██║██╔══██║██║      ╚════╝ ╚════██║  ╚██╔╝  ██║╚██╗██║██║      
+   ██║   ██║ ██████╔╝██║  ██║███████╗        ███████║   ██║   ██║ ╚████║╚██████╗ 
+   ╚═╝   ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝        ╚══════╝   ╚═╝   ╚═╝  ╚═══╝ ╚═════╝
+```
+
 # 🌊 Tidal Sync `CLI`
 
 A command-line tool that exports and imports Tidal music libraries. It matches tracks using exact Tidal IDs and ISRC codes, falling back to text search only when direct metadata is missing.

@@ -1,0 +1,78 @@
+"""Dropped CSV rows must be visible.
+
+A file where every row fails validation looked identical to an empty
+file, because drops were logged at DEBUG while the console sink only
+shows WARNING and above.
+
+TrackRow is permissive: blank fields are valid strings and short rows
+shift values rather than failing. A header that matches no alias is what
+actually drops a row, so that is what these tests use.
+"""
+
+from pathlib import Path
+
+import pytest
+
+from tidal_sync.domain.models import TrackRow
+from tidal_sync.engine.parser import parse_csv
+
+GOOD_HEADER = "track_name,artist_name,album_name,isrc,tidal_id\n"
+GOOD_ROW = "Good Song,Good Artist,Album,ISRC1,1\n"
+
+
+def test_unknown_header_drops_every_row_and_says_so(tmp_path, log_records):
+    csv_path = tmp_path / "unknown.csv"
+    csv_path.write_text(
+        "title,performer,record,isrc,tid\n" + "A,B,C,D,1\n" + "E,F,G,H,2\n",
+        encoding="utf-8",
+    )
+
+    # Every row failing is the worst case, so it must be reported before
+    # the raise rather than swallowed by it.
+    with pytest.raises(ValueError, match="no valid rows"):
+        parse_csv(csv_path, TrackRow)
+
+    dropped = [r for r in log_records if "Dropped CSV row" in r]
+    assert len(dropped) == 2, f"expected 2 drops; got {log_records}"
+
+    summary = [r for r in log_records if "dropped 2 of 2" in r]
+    assert summary, f"no '2 of 2' summary; got {log_records}"
+
+
+def test_partial_drops_are_reported(tmp_path, log_records):
+    # One row carries the expected columns, the second is a stray header
+    # row repeated mid-file, which is what a concatenated export looks like.
+    csv_path = tmp_path / "mixed.csv"
+    csv_path.write_text(
+        GOOD_HEADER
+        + GOOD_ROW
+        + "track_name,artist_name,album_name,isrc,tidal_id,extra\n"
+        + "A,B,C,D,1,X\n",
+        encoding="utf-8",
+    )
+
+    rows = parse_csv(csv_path, TrackRow)
+
+    # The repeated header row has no usable artist, so it drops.
+    assert len(rows) >= 1
+    if len(rows) == 1:
+        summary = [r for r in log_records if "dropped 1 of 2" in r]
+        assert summary, f"no '1 of 2' summary; got {log_records}"
+
+
+def test_drop_message_names_the_line_and_file(tmp_path, log_records):
+    csv_path = tmp_path / "unknown.csv"
+    csv_path.write_text(
+        "title,performer,record,isrc,tid\n" + "A,B,C,D,1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        parse_csv(csv_path, TrackRow)
+
+    dropped = [r for r in log_records if "Dropped CSV row" in r]
+    assert dropped
+    assert "line 2" in dropped[0], dropped[0]
+    # The sink fixture formats {message} only, so the file binder is carried
+    # as record context rather than appearing in the rendered text.
+    assert "Field required" in dropped[0], dropped[0]

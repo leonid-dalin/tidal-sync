@@ -129,6 +129,15 @@ def write_tracks_csv_sync(file_path: Path, tracks: Sequence[Any]) -> int:
     return _atomic_write_csv(file_path, _rows)
 
 
+def _summarise_validation_error(error: ValidationError) -> str:
+    """Renders a Pydantic error as one compact, readable line."""
+    parts = []
+    for err in error.errors():
+        field = ".".join(str(p) for p in err.get("loc", ())) or "<row>"
+        parts.append(f"{field}: {err.get('msg', 'invalid')}")
+    return "; ".join(parts)
+
+
 def _clean_row(row: dict[Any, Any]) -> dict[str, Any]:
     """
     Sanitises raw CSV exports to prevent database mismatch errors.
@@ -194,19 +203,42 @@ def parse_csv[T: BaseModel](file_path: Path, model_class: type[T]) -> list[T]:
         raise ValueError(f"{file_path.name}: file is empty")
 
     reader = csv.DictReader(io.StringIO(content))
+    total = 0
+    dropped = 0
 
     if not reader.fieldnames:
         raise ValueError(f"{file_path.name}: no CSV header row found")
 
     for row in reader:
+        total += 1
         try:
             cleaned_row = _clean_row(row)
             model = model_class(**cleaned_row)
             items.append(model)
-        except ValidationError as _:
-            logger.debug("Skipped malformed/empty CSV row", file=file_path.name)
+        except ValidationError as e:
+            dropped += 1
+            logger.warning(
+                "Dropped CSV row (line {line}): {detail}",
+                line=reader.line_num,
+                detail=_summarise_validation_error(e),
+                file=file_path.name,
+            )
         except Exception as e:
-            logger.warning("Unexpected error parsing row", file=file_path.name, error=str(e))
+            dropped += 1
+            logger.warning(
+                "Dropped CSV row (line {line}): unexpected error {error}",
+                line=reader.line_num,
+                error=str(e),
+                file=file_path.name,
+            )
+
+    if dropped:
+        logger.warning(
+            "CSV import incomplete: dropped {dropped} of {total} rows from {file}",
+            dropped=dropped,
+            total=total,
+            file=file_path.name,
+        )
 
     if not items:
         # Valid decode with no valid rows means a mismatched file, not an empty one.

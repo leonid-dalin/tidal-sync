@@ -4,7 +4,6 @@ Deletion errors were logged at DEBUG with no audit sink configured, so a
 wipe that deleted nothing still reported success.
 """
 
-
 from tidal_sync.domain.enums import ClearTarget
 from tidal_sync.engine.wiping import purge_target_category_async
 

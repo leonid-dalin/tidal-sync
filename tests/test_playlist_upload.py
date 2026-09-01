@@ -6,7 +6,6 @@ addedItemIds list. Nothing raises. Ignoring the return value therefore
 reports region-locked tracks as successfully added, which is F41.
 """
 
-
 from tidal_sync.engine.importer import (
     _build_favorites_uploader,
     build_playlist_uploader,

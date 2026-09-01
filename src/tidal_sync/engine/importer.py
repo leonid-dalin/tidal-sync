@@ -293,8 +293,12 @@ async def import_tracks_category_async(
             "ISRC mismatch & Text fallback failed" if track.isrc else "Text search failed"
         )
         if matched_id:
-            # Last write wins when several rows resolve to the same id, so a
-            # later dropped-track log line may name the wrong source row.
+            # Last writer wins on the source-row mapping. decide() already
+            # deduplicates the id against existing_track_ids under the stats
+            # lock, so the id is uploaded once, but a sibling resolving to the
+            # same id still overwrites the stored TrackRow. A later
+            # dropped-track audit line names that sibling, not the row that
+            # won the upload slot.
             staged_tracks_map[matched_id] = track
 
         await decide(

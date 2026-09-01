@@ -53,9 +53,7 @@ async def test_server_error_is_not_reported_as_region_locked():
 
     stats = ImportStats()
     with pytest.raises(requests.exceptions.HTTPError):
-        await upload_batch_with_recovery(
-            ["t1"], upload, stats, {}, "dest", StubProgress(), None
-        )
+        await upload_batch_with_recovery(["t1"], upload, stats, {}, "dest", StubProgress(), None)
     assert stats.failed == 0
 
 
@@ -84,9 +82,7 @@ async def test_progress_matches_outcomes():
 
     stats = ImportStats()
     progress = StubProgress()
-    await upload_batch_with_recovery(
-        ["a", "bad", "b"], upload, stats, {}, "dest", progress, None
-    )
+    await upload_batch_with_recovery(["a", "bad", "b"], upload, stats, {}, "dest", progress, None)
     assert progress.advanced == stats.added + stats.failed
 
 
@@ -143,9 +139,7 @@ async def test_etag_mismatch_still_retries_the_whole_chunk():
         return upload_impl(chunk)
 
     stats = ImportStats()
-    await upload_batch_with_recovery(
-        ["a", "b"], upload, stats, {}, "dest", StubProgress(), None
-    )
+    await upload_batch_with_recovery(["a", "b"], upload, stats, {}, "dest", StubProgress(), None)
 
     assert stats.added == 2
     assert stats.failed == 0

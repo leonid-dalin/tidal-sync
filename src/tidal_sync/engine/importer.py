@@ -9,7 +9,7 @@ fallbacks, and orchestrates the upload queues.
 
 import asyncio
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 import tidalapi
 from loguru import logger
 from rich.console import Console
@@ -111,6 +111,39 @@ async def resolve_and_import_playlist(
         )
 
 
+async def resolve_track_to_id(
+        session: Any,
+        track_name: str,
+        artist_name: str,
+        tidal_id: str | None = None,
+        isrc: str | None = None,
+) -> str | None:
+    """Resolves one track to a Tidal id, or None when nothing matches.
+
+    Session.search() returns a SearchResults TypedDict, which is a plain
+    dict at runtime, so results must be read by key. Reading them with
+    getattr() always fell through to the default and every track without
+    a direct Tidal id was reported as not found.
+    """
+    if tidal_id:
+        return str(tidal_id)
+
+    if isrc:
+        results = await execute_network(session.search, f"isrc:{isrc}")
+        tracks = results.get("tracks") or []
+        if tracks:
+            return str(tracks[0].id)
+
+    primary_artist = artist_name.split(", ")[0].strip() if artist_name else ""
+    query = f"{track_name} {primary_artist}".strip()
+    results = await execute_network(session.search, query)
+    tracks = results.get("tracks") or []
+    if tracks:
+        return str(tracks[0].id)
+
+    return None
+
+
 async def import_tracks_category_async(
         session: tidalapi.Session,
         file_path: Path,
@@ -165,19 +198,17 @@ async def import_tracks_category_async(
 
     # 2. Metadata translation
     async def _resolve_track_metadata_to_id(track: TrackRow) -> None:
-        matched_id = str(track.tidal_id) if track.tidal_id else None
+        matched_id = await resolve_track_to_id(
+            session,
+            track_name=track.track_name,
+            artist_name=track.artist_name,
+            tidal_id=str(track.tidal_id) if track.tidal_id else None,
+            isrc=str(track.isrc) if track.isrc else None,
+        )
 
-        if not matched_id and track.isrc:
-            results = await execute_network(session.search, f"isrc:{str(track.isrc)}")
-            res_tracks = getattr(results, 'tracks', [])
-            if res_tracks: matched_id = str(res_tracks[0].id)
-
-        if not matched_id:
-            results = await execute_network(session.search, str(track.search_query))
-            res_tracks = getattr(results, 'tracks', [])
-            if res_tracks: matched_id = str(res_tracks[0].id)
-
-        failure_reason = "ISRC mismatch & Text fallback failed" if track.isrc else "Text search failed"
+        failure_reason = (
+            "ISRC mismatch & Text fallback failed" if track.isrc else "Text search failed"
+        )
         if matched_id:
             staged_tracks_map[matched_id] = track
 
@@ -253,8 +284,10 @@ async def import_albums_async(session: tidalapi.Session, file_path: Path, stats:
         matched_id = str(album.tidal_id) if album.tidal_id else None
 
         if not matched_id:
-            results = await execute_network(session.search, f"{album.album_name} {album.artist_name}")
-            res_albums = getattr(results, 'albums', [])
+            results = await execute_network(
+                session.search, f"{album.album_name} {album.artist_name}"
+            )
+            res_albums = results.get("albums") or []
             if res_albums:
                 matched_id = str(res_albums[0].id)
 

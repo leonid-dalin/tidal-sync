@@ -132,7 +132,11 @@ async def export_user_playlists_to_disk(session: tidalapi.Session, base_dir: Pat
         base_dir (Path): The root output directory for the backup.
     """
     try:
-        playlists = await fetch_all_async(session.user.playlists)
+        user = cast(TidalUser, cast(object, session.user))
+        if user is None:
+            logger.error("No authenticated user on the session; cannot export playlists")
+            return
+        playlists = await fetch_all_async(user.playlists)
 
         # Deduplicate V1 playlists (Tidal API yields folder contents twice)
         unique_playlists = {}

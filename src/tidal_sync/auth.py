@@ -131,12 +131,15 @@ def _save_session_to_disk(session: tidalapi.Session, token_file: Path) -> None:
         session (tidalapi.Session): The authenticated Tidal session.
         token_file (Path): The destination file path.
     """
+    user = session.user
+    if user is None:
+        raise RuntimeError("Cannot save a session with no authenticated user")
     token_data = {
         "token_type": session.token_type,
         "access_token": session.access_token,
         "refresh_token": session.refresh_token,
         "expiry_time": session.expiry_time.isoformat() if session.expiry_time else None,
-        "user_id": session.user.id,
+        "user_id": user.id,
     }
 
     # Open with the final mode from the outset. Writing first and chmod-ing

@@ -172,25 +172,21 @@ async def purge_target_category_async(
         return report
 
     if target in (ClearTarget.ALL, ClearTarget.TRACKS):
-        # user.favorites.tracks/albums/artists are collection attributes on the
-        # real tidalapi Favorites surface; the engine's narrow Favorites protocol
-        # only declares the per-id verbs, so cast at the call site.
-        favorites = cast(Any, user.favorites)
-        tracks = await fetch_all_async(favorites.tracks)
+        tracks = await fetch_all_async(user.favorites.tracks)
         await _clear_category_async(
             tracks, lambda t: lambda: user.favorites.remove_track(str(t.id)), "liked songs"
         )
 
     # 3. Clear Albums
     if target in (ClearTarget.ALL, ClearTarget.ALBUMS):
-        albums = await fetch_all_async(favorites.albums)
+        albums = await fetch_all_async(user.favorites.albums)
         await _clear_category_async(
             albums, lambda a: lambda: user.favorites.remove_album(str(a.id)), "liked albums"
         )
 
     # 4. Clear Artists & Blocklist
     if target in (ClearTarget.ALL, ClearTarget.ARTISTS):
-        artists = await fetch_all_async(favorites.artists)
+        artists = await fetch_all_async(user.favorites.artists)
         await _clear_category_async(
             artists, lambda art: lambda: user.favorites.remove_artist(str(art.id)), "artists"
         )

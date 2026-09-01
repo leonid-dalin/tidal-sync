@@ -4,6 +4,8 @@ Deletion errors were logged at DEBUG with no audit sink configured, so a
 wipe that deleted nothing still reported success.
 """
 
+import pytest
+
 from tidal_sync.domain.enums import ClearTarget
 from tidal_sync.engine.wiping import purge_target_category_async
 
@@ -154,3 +156,14 @@ async def test_purge_v2_folders_helper_requires_explicit_dry_run():
 
     sig = inspect.signature(_purge_v2_folders_async)
     assert sig.parameters["dry_run"].default is inspect.Parameter.empty
+
+
+@pytest.mark.parametrize("target", list(ClearTarget))
+async def test_every_clear_target_runs_without_crashing(target):
+    """clear albums and clear artists raised UnboundLocalError: the favorites
+    local was bound inside the tracks branch and read from two others. Every
+    target must reach the report, not just the two the suite happened to cover.
+    """
+    report = await purge_target_category_async(FolderSession(), target, dry_run=True)
+
+    assert report.deleted == 0, "a dry run deletes nothing whatever the target"

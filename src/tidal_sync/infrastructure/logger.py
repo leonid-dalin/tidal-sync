@@ -28,18 +28,20 @@ Features:
     - Automatic log rotation (10 MB limits) and 7-day retention
 
 Example:
-    Initialise the base console logger:
+    Initialise the base console logger, start an audit session, and write a
+    secure log line. The exact audit file path comes back from
+    audit_log_path() and is needed to stop the sink later::
 
-    >>> from logger import setup_global_logging
-    >>> setup_global_logging()
+        from pathlib import Path
+        from tidal_sync.infrastructure.logger import (
+            setup_audit_logging,
+            setup_global_logging,
+            logger,
+        )
 
-    Start an audit session and write a secure log:
-
-    >>> from pathlib import Path
-    >>> from tidal_sync.infrastructure.logger import setup_audit_logging, logger
-    >>> handler_id = setup_audit_logging(Path("./exports/reports"))
-    >>> audit_log_path(handler_id)
-    >>> logger.bind(audit=True).info("Processing playlist", extra={"id": 123})
+        setup_global_logging()
+        handler_id = setup_audit_logging(Path("./exports/reports"))
+        logger.bind(audit=True).info("Processing playlist", id=123)
 
 Note:
     The `json_formatter` bypasses loguru template injection bugs by

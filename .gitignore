@@ -24,3 +24,7 @@ uv.lock
 .idea/
 .vscode/
 *.swp
+
+# --- Planning ---
+.superpowers/
+docs/superpowers/

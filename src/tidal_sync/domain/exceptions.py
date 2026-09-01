@@ -34,3 +34,25 @@ class TidalAuthenticationError(TidalSyncError):
     """
 
     pass
+
+
+class TidalRateLimitError(TidalSyncError):
+    """Raised when Tidal throttles us and the retry budget is exhausted."""
+
+    pass
+
+
+class TidalTransientError(TidalSyncError):
+    """Raised when a retryable failure outlives the retry budget."""
+
+    pass
+
+
+class TidalPoisonError(TidalSyncError):
+    """Raised when a specific item is rejected and must be dropped.
+
+    Only a 403/404 (region lock or removed from catalogue) or an
+    ObjectNotFound qualifies. Everything else is transient or fatal.
+    """
+
+    pass

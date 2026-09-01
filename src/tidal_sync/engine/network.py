@@ -8,13 +8,20 @@ asynchronous tasks. It intercepts HTTP 429 (Too Many Requests) and HTTP 403
 
 import asyncio
 import inspect
+import random
 import time
 from collections.abc import Callable
 from typing import Any
 
+import requests
 import tidalapi
 from loguru import logger
 from tidalapi.exceptions import TooManyRequests
+
+from ..domain.exceptions import (
+    TidalRateLimitError,
+    TidalTransientError,
+)
 
 
 class GlobalTidalGate:
@@ -59,50 +66,120 @@ class GlobalTidalGate:
 GLOBAL_GATE = GlobalTidalGate()
 
 
-async def execute_network(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_RATE_LIMIT_DEFAULT = 60.0
+_ABUSE_LOCK = 1800.0
+
+
+def classify_error(error: BaseException) -> str | None:
+    """Classifies an API failure as 'rate-limit', 'abuse', 'transient', or None.
+
+    The status is read off the response object, never from str(error), so an
+    error mentioning a track with '429' in its id is not mistaken for a
+    throttle. A response carrying an explicit status is never retried unless
+    that status is retryable: HTTPError subclasses RequestException, so a bare
+    RequestException check after the status tests would retry every 4xx.
     """
-    Executes a Tidal API network call safely behind the global rate limiter.
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", None)
+
+    if status == 429 or isinstance(error, TooManyRequests):
+        return "rate-limit"
+
+    if status == 403:
+        message = str(error).lower()
+        if "abuse" in message or "11003" in message:
+            return "abuse"
+        return None
+
+    if status in _RETRYABLE_STATUS:
+        return "transient"
+
+    if status is not None:
+        # An explicit non-retryable status: retrying a 400 or 401 cannot
+        # succeed, and costs five attempts plus backoff each time.
+        return None
+
+    if isinstance(error, requests.exceptions.RequestException):
+        # No status means no response reached us: connection reset, timeout,
+        # dropped chunk. Those are worth another attempt.
+        return "transient"
+
+    return None
+
+
+async def execute_network(
+    func: Callable[..., Any],
+    *args: Any,
+    max_retries: int = 5,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    **kwargs: Any,
+) -> Any:
+    """
+    Executes a Tidal API call behind the global gate, retrying transient failures.
 
     Wraps the synchronous API execution in an asyncio thread to prevent
-    blocking the main event loop. If the server rejects the request, it
-    triggers the global backoff and retries up to five times.
+    blocking the main event loop. Retries apply only to rate limits, 5xx,
+    and connection-level failures; other 4xx responses fail fast.
 
     Args:
         func (Callable): The synchronous Tidal API method to execute.
         *args: Positional arguments for the API method.
+        max_retries (int): Attempts before giving up.
+        base_delay (float): First backoff step, doubled each attempt.
+        max_delay (float): Ceiling for a single backoff.
         **kwargs: Keyword arguments for the API method.
 
     Returns:
         Any: The parsed response from the Tidal API.
 
     Raises:
-        Exception: If the maximum retry limit (5) is exceeded.
+        TidalRateLimitError: A throttle outlived the retry budget.
+        TidalTransientError: Another retryable failure outlived the budget.
 
     Example:
         >>> result = await execute_network(session.search, "artist name")
     """
-    retries = 0
-    while retries < 5:
+    last_error: BaseException | None = None
+    kind: str | None = None
+
+    for attempt in range(max_retries):
         await GLOBAL_GATE.pre_flight_check()
         try:
             return await asyncio.to_thread(func, *args, **kwargs)
-        except TooManyRequests as e:
-            retry_after = getattr(e, "retry_after", 60.0)
-            if retry_after <= 0:
-                retry_after = 60.0
-            await GLOBAL_GATE.trigger_backoff(retry_after, "HTTP 429 Too Many Requests")
-            retries += 1
-        except Exception as e:
-            error_str = str(e).lower()
-            if "429" in error_str or "too many requests" in error_str:
-                await GLOBAL_GATE.trigger_backoff(60.0, "Generic 429 Too Many Requests")
-                retries += 1
-            elif "403" in error_str and ("abuse" in error_str or "11003" in error_str):
-                await GLOBAL_GATE.trigger_backoff(1800.0, "HTTP 403 Abuse Detected (30m Lock)")
-                retries += 1
-            else:
+        except BaseException as e:  # noqa: BLE001 - reclassified below
+            kind = classify_error(e)
+            if kind is None:
                 raise
-    raise Exception(f"Max retries exceeded for {func.__name__} due to rate limiting.")
+            last_error = e
+
+            if kind == "abuse":
+                # TooManyRequests defaults retry_after to -1, not to absent,
+                # so a numeric fallback would shrink a 30 minute account lock
+                # to one second. The abuse lock bypasses max_delay too.
+                await GLOBAL_GATE.trigger_backoff(_ABUSE_LOCK, f"Abuse lock: {e}")
+            elif kind == "rate-limit":
+                retry_after = getattr(e, "retry_after", 0.0) or 0.0
+                if retry_after <= 0:
+                    retry_after = _RATE_LIMIT_DEFAULT
+                await GLOBAL_GATE.trigger_backoff(min(retry_after, max_delay), f"Rate limit: {e}")
+            else:
+                await GLOBAL_GATE.trigger_backoff(base_delay, f"Transient: {e}")
+
+            if attempt + 1 < max_retries:
+                # Jitter, so workers stop waking in lockstep and re-triggering
+                # the throttle they just hit.
+                delay = min(base_delay * (2**attempt), max_delay)
+                await asyncio.sleep(delay * (0.5 + random.random() / 2))
+
+    if kind in ("rate-limit", "abuse"):
+        raise TidalRateLimitError(
+            f"Rate limit persisted after {max_retries} attempts"
+        ) from last_error
+    raise TidalTransientError(
+        f"Transient failure persisted after {max_retries} attempts: {last_error}"
+    ) from last_error
 
 
 async def fetch_all_async(api_method: Any, **kwargs: Any) -> list[Any]:

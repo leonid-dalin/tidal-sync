@@ -11,7 +11,7 @@ The project links to these libraries at runtime:
 
 | Package | Version constraint | Licence | Upstream licence file |
 | --- | --- | --- | --- |
-| tidalapi | >=0.8.9 | MIT | https://github.com/tidalapi/tidalapi/blob/master/LICENSE |
+| tidalapi | >=0.8.9 | LGPL-3.0 | https://github.com/EbbLabs/python-tidal/blob/main/LICENSE |
 | typer | >=0.12.1 | MIT | https://github.com/fastapi/typer/blob/master/LICENSE |
 | click | (dependency of typer) | BSD-3-Clause | https://github.com/pallets/click/blob/main/LICENSE.txt |
 | pydantic | >=2.12.2 | MIT | https://github.com/pydantic/pydantic/blob/main/LICENSE |
@@ -42,10 +42,12 @@ interact with it.
 
 ## Notes on individual licences
 
-- MIT and BSD-3-Clause packages permit redistribution provided the copyright
-  notice and licence text are retained. This summary, together with each
-  package's own licence file in the installed environment, satisfies that
-  requirement.
+- MIT, BSD-3-Clause, and LGPL-3.0 packages permit redistribution provided the
+  copyright notice and licence text are retained. tidal-sync depends on
+  tidalapi (LGPL-3.0); the AGPL-3.0 licence of tidal-sync is compatible with
+  linking against an LGPL library, and tidal-sync does not modify tidalapi. This
+  summary, together with each package's own licence file in the installed
+  environment, satisfies the attribution requirement.
 - Apache-2.0 (orjson) additionally grants a patent licence and requires that
   modifications be stated; tidal-sync does not modify orjson, so the unmodified
   distribution term applies.

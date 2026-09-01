@@ -105,6 +105,27 @@ See [CLI Reference](docs/cli-reference.md) for the full command list.
 * **Network gate:** a global rate-limit gate pauses all workers on a 429/403 so
   the account is not flagged.
 
+## 🧹 Curation
+
+The same verbs used by `clear` work one item at a time when you want to curate by hand. Each command takes one or more ids (bare numeric strings or Tidal share URLs) and writes to the named profile:
+
+```bash
+# Like / unlike a single track, artist or album
+tidal-sync like-tracks 20019287
+tidal-sync like-artists 4894212
+tidal-sync like-albums 20019282
+
+tidal-sync unlike-tracks 20019287 -p target
+tidal-sync unlike-artists 4894212 -p source
+tidal-sync unlike-albums 20019282
+
+# Block / unblock artists on the account
+tidal-sync block 4894212 8107285
+tidal-sync unblock 4894212 8107285 -p source
+```
+
+Every verb reports one line per id so a partial run shows exactly which item failed. `block` asks you to retype the profile name before any batch above ten ids goes out; pass `--force` to skip the prompt in automation. `unblock` has no rail. See [CLI Reference](docs/cli-reference.md) for the full command list.
+
 ## 🤝 Contributing
 
 Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for the

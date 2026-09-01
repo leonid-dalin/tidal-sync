@@ -203,6 +203,270 @@ Note: the clear audit log is currently routed to the same `./import_reports` dir
 
 ---
 
+### `like-tracks`
+
+**Synopsis**
+```bash
+tidal-sync like-tracks <ids>... [--profile NAME] [-p NAME]
+```
+
+**Description**
+Likes one or more tracks on the named profile. Each id is sent on its own request, so the command reports exactly which track failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/track/<id>`); anything unparseable is rejected before any request goes out.
+
+**Arguments**
+
+* `ids` (required, one or more): One or more track ids or Tidal share URLs.
+
+**Options**
+
+* `--profile`, `-p` NAME: Which account profile to like into. Default: `default`.
+
+**Example**
+```bash
+# Like three tracks on the default account
+tidal-sync like-tracks 20019287 19782830 19781477
+
+# Like a track parsed from a share URL on a named account
+tidal-sync like-tracks https://listen.tidal.com/track/20019287 -p target
+```
+
+**Reads and writes**
+Reads: the session token for the selected profile. Writes: nothing on disk; new favourites appear on the Tidal account for the selected profile.
+
+---
+
+### `like-artists`
+
+**Synopsis**
+```bash
+tidal-sync like-artists <ids>... [--profile NAME] [-p NAME]
+```
+
+**Description**
+Likes one or more artists on the named profile. Each id is sent on its own request, so the command reports exactly which artist failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/artist/<id>`); anything unparseable is rejected before any request goes out.
+
+**Arguments**
+
+* `ids` (required, one or more): One or more artist ids or Tidal share URLs.
+
+**Options**
+
+* `--profile`, `-p` NAME: Which account profile to like into. Default: `default`.
+
+**Example**
+```bash
+# Follow two artists on the default account
+tidal-sync like-artists 4894212 8107285
+
+# Follow an artist from a share URL on a named account
+tidal-sync like-artists https://tidal.com/artist/4894212 -p source
+```
+
+**Reads and writes**
+Reads: the session token for the selected profile. Writes: nothing on disk; new favourites appear on the Tidal account for the selected profile.
+
+---
+
+### `like-albums`
+
+**Synopsis**
+```bash
+tidal-sync like-albums <ids>... [--profile NAME] [-p NAME]
+```
+
+**Description**
+Likes one or more albums on the named profile. Each id is sent on its own request, so the command reports exactly which album failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/album/<id>`); anything unparseable is rejected before any request goes out.
+
+**Arguments**
+
+* `ids` (required, one or more): One or more album ids or Tidal share URLs.
+
+**Options**
+
+* `--profile`, `-p` NAME: Which account profile to like into. Default: `default`.
+
+**Example**
+```bash
+# Save three albums on the default account
+tidal-sync like-albums 20019282 19781468 19782820
+
+# Save an album from a share URL on a named account
+tidal-sync like-albums https://listen.tidal.com/album/20019282 -p target
+```
+
+**Reads and writes**
+Reads: the session token for the selected profile. Writes: nothing on disk; new favourites appear on the Tidal account for the selected profile.
+
+---
+
+### `unlike-tracks`
+
+**Synopsis**
+```bash
+tidal-sync unlike-tracks <ids>... [--profile NAME] [-p NAME]
+```
+
+**Description**
+Removes one or more tracks from the favourites on the named profile. Each id is sent on its own request, so the command reports exactly which track failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/track/<id>`); anything unparseable is rejected before any request goes out.
+
+**Arguments**
+
+* `ids` (required, one or more): One or more track ids or Tidal share URLs.
+
+**Options**
+
+* `--profile`, `-p` NAME: Which account profile to unlike from. Default: `default`.
+
+**Example**
+```bash
+# Remove three tracks from the default account favourites
+tidal-sync unlike-tracks 20019287 19782830 19781477
+
+# Remove a track from a named account
+tidal-sync unlike-tracks 20019287 -p target
+```
+
+**Reads and writes**
+Reads: the session token for the selected profile. Writes: nothing on disk; the named tracks disappear from the Tidal account favourites.
+
+---
+
+### `unlike-artists`
+
+**Synopsis**
+```bash
+tidal-sync unlike-artists <ids>... [--profile NAME] [-p NAME]
+```
+
+**Description**
+Removes one or more artists from the followed list on the named profile. Each id is sent on its own request, so the command reports exactly which artist failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/artist/<id>`); anything unparseable is rejected before any request goes out.
+
+**Arguments**
+
+* `ids` (required, one or more): One or more artist ids or Tidal share URLs.
+
+**Options**
+
+* `--profile`, `-p` NAME: Which account profile to unlike from. Default: `default`.
+
+**Example**
+```bash
+# Unfollow two artists on the default account
+tidal-sync unlike-artists 4894212 8107285
+
+# Unfollow one artist on a named account
+tidal-sync unlike-artists 4894212 -p source
+```
+
+**Reads and writes**
+Reads: the session token for the selected profile. Writes: nothing on disk; the named artists disappear from the Tidal account followed list.
+
+---
+
+### `unlike-albums`
+
+**Synopsis**
+```bash
+tidal-sync unlike-albums <ids>... [--profile NAME] [-p NAME]
+```
+
+**Description**
+Removes one or more albums from the saved albums on the named profile. Each id is sent on its own request, so the command reports exactly which album failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/album/<id>`); anything unparseable is rejected before any request goes out.
+
+**Arguments**
+
+* `ids` (required, one or more): One or more album ids or Tidal share URLs.
+
+**Options**
+
+* `--profile`, `-p` NAME: Which account profile to unlike from. Default: `default`.
+
+**Example**
+```bash
+# Remove three saved albums on the default account
+tidal-sync unlike-albums 20019282 19781468 19782820
+
+# Remove one saved album on a named account
+tidal-sync unlike-albums 20019282 -p target
+```
+
+**Reads and writes**
+Reads: the session token for the selected profile. Writes: nothing on disk; the named albums disappear from the Tidal account saved albums.
+
+---
+
+### `block`
+
+**Synopsis**
+```bash
+tidal-sync block <ids>... [--profile NAME] [-p NAME] [--force] [-f]
+```
+
+**Description**
+Blocks one or more artists on the named profile. Each id is sent on its own POST request, so the command reports exactly which artist failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/artist/<id>`); anything unparseable is rejected before any request goes out.
+
+The command is destructive at scale. When the resolved id list exceeds ten ids and `--force` is absent, the CLI prints one rich line per id then asks the operator to retype the profile name; a mismatched answer aborts before any request goes out. Ten is the threshold under which no prompt appears. Use `--force` in automation to skip the prompt.
+
+**Arguments**
+
+* `ids` (required, one or more): One or more artist ids or Tidal share URLs.
+
+**Options**
+
+* `--profile`, `-p` NAME: Which account profile to block on. Default: `default`.
+* `--force`, `-f`: Skip the confirmation prompt for batches above the ten-id rail. Default: `False`.
+
+**Examples**
+```bash
+# Block two artists on the default account
+tidal-sync block 4894212 8107285
+
+# Block an artist from a share URL on a named account
+tidal-sync block https://tidal.com/artist/4894212 -p target
+
+# Block a large batch without prompting
+tidal-sync block $(cat blocklist.txt) --force
+```
+
+**Reads and writes**
+Reads: the session token for the selected profile. Writes: nothing on disk; the named artists disappear from the Tidal account discoverable catalogue and appear in the account's block list.
+
+---
+
+### `unblock`
+
+**Synopsis**
+```bash
+tidal-sync unblock <ids>... [--profile NAME] [-p NAME]
+```
+
+**Description**
+Unblocks one or more artists on the named profile. Each id is sent on its own DELETE request, so the command reports exactly which artist failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/artist/<id>`); anything unparseable is rejected before any request goes out.
+
+Unblock is restorative and has no safety rail. There is no `--force` because there is nothing to confirm past the standard one-line-per-id report.
+
+**Arguments**
+
+* `ids` (required, one or more): One or more artist ids or Tidal share URLs.
+
+**Options**
+
+* `--profile`, `-p` NAME: Which account profile to unblock on. Default: `default`.
+
+**Examples**
+```bash
+# Unblock two artists on the default account
+tidal-sync unblock 4894212 8107285
+
+# Unblock an artist from a share URL on a named account
+tidal-sync unblock https://tidal.com/artist/4894212 -p source
+```
+
+**Reads and writes**
+Reads: the session token for the selected profile. Writes: nothing on disk; the named artists are removed from the Tidal account block list.
+
+---
+
 ### `profiles`
 
 **Synopsis**

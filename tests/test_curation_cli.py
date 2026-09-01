@@ -172,3 +172,131 @@ def test_unlike_albums_forwards_profile(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert captured == ["alt"]
+
+
+# ---------------------------------------------------------------------------
+# block and unblock: the ten-id confirmation rail.
+#
+# Block is destructive at scale, so over ten ids without --force prompts the
+# operator to type the profile name; on a mismatched answer the run aborts
+# before the engine is called. Under ten ids, with --force, or in unblock, the
+# rail is skipped.
+# ---------------------------------------------------------------------------
+
+
+def test_block_under_ten_ids_skips_the_rail_and_calls_engine(monkeypatch):
+    """Block under ten ids is small enough to skip the confirmation rail.
+
+    The engine still runs and prints one rich line per id.
+    """
+    engine_calls: list[list[str]] = []
+
+    def _get_session(profile="default"):
+        return _session()
+
+    async def _block_artists(session, ids):
+        engine_calls.append(list(ids))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    monkeypatch.setattr(cli_module, "get_session", _get_session)
+    monkeypatch.setattr(cli_module.curation, "block_artists", _block_artists)
+
+    ids = [str(i) for i in range(1, 10)]
+    result = runner.invoke(app, ["block", *ids])
+
+    assert result.exit_code == 0, result.output
+    assert engine_calls == [ids]
+    for item_id in ids:
+        assert item_id in result.output
+
+
+def test_block_over_ten_ids_prompts_and_aborts_on_mismatch_without_engine_call(monkeypatch):
+    """Over ten ids without --force prompts; a wrong answer aborts and the
+    engine verb is never called. Exit is non-zero.
+
+    Asserts the prompt text appears so a "no such command" exit 2 cannot
+    silently satisfy this case.
+    """
+    engine_calls: list[list[str]] = []
+
+    def _get_session(profile="default"):
+        return _session()
+
+    async def _block_artists(session, ids):
+        engine_calls.append(list(ids))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    monkeypatch.setattr(cli_module, "get_session", _get_session)
+    monkeypatch.setattr(cli_module.curation, "block_artists", _block_artists)
+
+    ids = [str(i) for i in range(1, 12)]
+    result = runner.invoke(app, ["block", *ids], input="wrong\n")
+
+    assert "Type 'default' to confirm" in result.output, result.output
+    assert engine_calls == [], "engine must not run when the confirmation answer does not match"
+    assert result.exit_code != 0, result.output
+
+
+def test_block_over_ten_ids_with_force_skips_the_prompt(monkeypatch):
+    """--force bypasses the rail even when over ten ids, and the engine runs."""
+    engine_calls: list[list[str]] = []
+
+    def _get_session(profile="default"):
+        return _session()
+
+    async def _block_artists(session, ids):
+        engine_calls.append(list(ids))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    monkeypatch.setattr(cli_module, "get_session", _get_session)
+    monkeypatch.setattr(cli_module.curation, "block_artists", _block_artists)
+
+    ids = [str(i) for i in range(1, 12)]
+    result = runner.invoke(app, ["block", *ids, "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert engine_calls == [ids]
+
+
+def test_unblock_never_prompts_regardless_of_id_count(monkeypatch):
+    """Unblock is restorative and carries no rail at any scale."""
+    engine_calls: list[list[str]] = []
+
+    def _get_session(profile="default"):
+        return _session()
+
+    async def _unblock_artists(session, ids):
+        engine_calls.append(list(ids))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    monkeypatch.setattr(cli_module, "get_session", _get_session)
+    monkeypatch.setattr(cli_module.curation, "unblock_artists", _unblock_artists)
+
+    ids = [str(i) for i in range(1, 12)]
+    result = runner.invoke(app, ["unblock", *ids])
+
+    assert result.exit_code == 0, result.output
+    assert engine_calls == [ids]
+
+
+def test_block_over_ten_ids_abort_exits_nonzero_with_no_engine_call(monkeypatch):
+    """Pinning the abort path's exit code and zero-call guarantee, and that
+    the prompt was issued (not a usage error)."""
+    engine_calls: list[list[str]] = []
+
+    def _get_session(profile="default"):
+        return _session()
+
+    async def _block_artists(session, ids):
+        engine_calls.append(list(ids))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    monkeypatch.setattr(cli_module, "get_session", _get_session)
+    monkeypatch.setattr(cli_module.curation, "block_artists", _block_artists)
+
+    ids = [str(i) for i in range(1, 12)]
+    result = runner.invoke(app, ["block", *ids], input="wrong\n")
+
+    assert "Type 'default' to confirm" in result.output, result.output
+    assert result.exit_code == 1, result.output
+    assert engine_calls == []

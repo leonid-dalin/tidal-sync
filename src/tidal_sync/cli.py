@@ -286,6 +286,98 @@ def _unlike_command(verb: Any, ids: list[str], profile: str, kind: FavoriteKind)
     )
 
 
+# Threshold above which `block` asks the operator to retype the profile name
+# before a destructive batch proceeds. Ten is the figure specified in
+# plan-v2 Task 6; under it the operator sees one rich line per id and nothing
+# else.
+_BLOCK_RAIL_THRESHOLD = 10
+
+
+def _run_block_command(
+    *,
+    profile: str,
+    verb: Any,
+    verb_name: str,
+    references: list[str],
+    force: bool,
+) -> None:
+    """Shared body for the block and unblock commands.
+
+    Resolves each reference through ``extract_tidal_id`` and calls the engine
+    verb inside ``asyncio.run``. Prints one rich line per id and exits 1 if
+    the engine reported any rejected id. ``block`` is destructive at scale:
+    when the resolved id list exceeds the ten-id rail and ``force`` is
+    absent, the operator is asked to retype the profile name and a mismatched
+    answer aborts before the engine is called. ``unblock`` is restorative and
+    skips the rail entirely.
+    """
+    try:
+        session = get_session(profile)
+        try:
+            ids = [extract_tidal_id(reference) for reference in references]
+        except ValueError as e:
+            raise typer.BadParameter(str(e)) from e
+
+        if not force and len(ids) > _BLOCK_RAIL_THRESHOLD:
+            typed = typer.prompt(f"Type '{profile}' to confirm blocking {len(ids)} artists")
+            if typed != profile:
+                console.print("[red]Confirmation did not match. Aborting.[/red]")
+                raise typer.Exit(1)
+
+        outcome = asyncio.run(verb(session, ids))
+    except TidalAuthenticationError as e:
+        console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+        raise typer.Exit(1) from e
+    except TidalSyncError as e:
+        console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
+        raise typer.Exit(1) from e
+
+    for item_id in outcome.applied:
+        console.print(f"  [green]{verb_name} artist {item_id}[/green]")
+    for item_id in outcome.rejected:
+        console.print(f"  [red]{verb_name} artist {item_id}[/red]")
+
+    if outcome.rejected:
+        raise typer.Exit(1)
+
+
+@app.command()
+def block(
+    ids: Annotated[list[str], typer.Argument(help="One or more artist ids or Tidal share URLs")],
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to block on")
+    ] = "default",
+    force: Annotated[
+        bool, typer.Option("--force", "-f", help="Skip the confirmation prompt for large batches")
+    ] = False,
+) -> None:
+    """Blocks one or more artists on the named profile."""
+    _run_block_command(
+        profile=profile,
+        verb=curation.block_artists,
+        verb_name="Blocked",
+        references=ids,
+        force=force,
+    )
+
+
+@app.command()
+def unblock(
+    ids: Annotated[list[str], typer.Argument(help="One or more artist ids or Tidal share URLs")],
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to unblock on")
+    ] = "default",
+) -> None:
+    """Unblocks one or more artists on the named profile."""
+    _run_block_command(
+        profile=profile,
+        verb=curation.unblock_artists,
+        verb_name="Unblocked",
+        references=ids,
+        force=True,
+    )
+
+
 @app.command(name="like-tracks")
 def like_tracks_cmd(
     ids: Annotated[list[str], typer.Argument(help="One or more track ids or Tidal share URLs")],

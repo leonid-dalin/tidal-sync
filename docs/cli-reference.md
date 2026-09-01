@@ -49,6 +49,8 @@ uv run tidal-sync import TARGET_PATH [OPTIONS]
 
 Downloads your entire Tidal library (playlists, liked songs, saved albums, and followed artists) to local CSV files. It builds a categorised folder structure at the target destination.
 
+`Followed Artists.csv` is restored on import. `Blocked Artists.csv` is written for reference only; Tidal exposes no API to restore blocked artists, so the importer does not read it.
+
 **Usage:**
 ```bash
 uv run tidal-sync export [OPTIONS]

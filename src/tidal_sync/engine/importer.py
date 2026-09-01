@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 from ..domain.logger import setup_audit_logging
-from ..domain.models import AlbumRow, TrackRow
+from ..domain.models import AlbumRow, ArtistRow, TrackRow
 from ..domain.protocols import CHUNK_SIZE, TidalUser
 from .folders import assign_playlist_to_v2_folder, ensure_v2_folder_exists
 from .match_policy import decide
@@ -111,6 +111,8 @@ async def resolve_and_import_playlist(
         await import_tracks_category_async(session, file_path, stats, is_favorites=True)
     elif filename == "Liked Albums.csv":
         await import_albums_async(session, file_path, stats)
+    elif filename == "Followed Artists.csv":
+        await import_artists_async(session, file_path, stats)
     else:
         p_name = fallback_name or file_path.stem
         await import_tracks_category_async(
@@ -406,4 +408,59 @@ async def import_albums_async(
 
     await run_matching_tasks_async(
         f"Matching & Adding {len(albums)} albums...", albums, _match_and_add_album_async
+    )
+
+
+async def import_artists_async(
+    session: tidalapi.Session, file_path: Path, stats: ImportStats
+) -> None:
+    """Matches and saves artists to the user's followed artists.
+
+    Blocked artists are export-only; Tidal exposes no API to restore them,
+    so only followed artists are imported.
+    """
+    artists = await asyncio.to_thread(parse_csv, file_path, ArtistRow)
+    if not artists:
+        return
+
+    user = cast(TidalUser, cast(object, session.user))
+
+    if not hasattr(user, "favorites"):
+        logger.error("User profile does not support favorites.")
+        return
+
+    console.print("[cyan]Importing Followed Artists...[/cyan]")
+    with console.status("[cyan]Scanning existing artists...[/cyan]"):
+        existing_artists = await fetch_all_async(user.favorites.artists)
+        existing_artist_ids = {str(a.id) for a in existing_artists}
+
+    async def _match_and_add_artist_async(artist: ArtistRow) -> None:
+        matched_id = str(artist.tidal_id) if artist.tidal_id else None
+
+        if not matched_id:
+            results = await execute_network(session.search, artist.artist_name)
+            res_artists = results.get("artists") or []
+            if res_artists:
+                matched_id = str(res_artists[0].id)
+
+        async def _async_add(a_id: str) -> None:
+            await execute_network(user.favorites.add_artist, a_id)
+
+        failure_reason = "Text search failed" if not matched_id else "N/A"
+
+        await decide(
+            matched_id,
+            "Artist",
+            artist.artist_name,
+            artist.artist_name,
+            file_path.name,
+            "Followed Artists",
+            existing_artist_ids,
+            stats,
+            add_method=_async_add,
+            failure_reason=failure_reason,
+        )
+
+    await run_matching_tasks_async(
+        f"Matching & Adding {len(artists)} artists...", artists, _match_and_add_artist_async
     )

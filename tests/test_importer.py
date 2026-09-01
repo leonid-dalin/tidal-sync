@@ -8,7 +8,11 @@ what happened.
 import pytest
 
 from tidal_sync.domain.models import TrackRow
-from tidal_sync.engine.importer import import_collection_from_disk
+from tidal_sync.engine.importer import (
+    ImportStats,
+    import_collection_from_disk,
+    resolve_and_import_playlist,
+)
 from tidal_sync.engine.parser import parse_csv
 
 
@@ -62,3 +66,58 @@ async def test_failed_files_are_named_in_the_summary(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "file(s) failed" in out
     assert "Broken.csv" in out
+
+
+class RecordingArtistSession:
+    """Records the artist ids it was asked to add."""
+
+    def __init__(self):
+        self.added: list[str] = []
+        self.searches: list[str] = []
+        self.user = self.User(self)
+
+    class User:
+        id = 1
+
+        def __init__(self, session):
+            self.favorites = RecordingArtistSession.Favorites(session)
+
+    class Favorites:
+        def __init__(self, session):
+            self._session = session
+
+        def artists(self, *a, **kw):
+            return []
+
+        def add_artist(self, a_id: str) -> None:
+            self._session.added.append(a_id)
+
+    def search(self, query: str, *a, **kw):
+        self.searches.append(query)
+        return {"artists": [], "tracks": [], "albums": [], "playlists": [], "videos": []}
+
+
+async def test_followed_artists_file_routes_to_the_artist_importer(tmp_path):
+    csv = tmp_path / "Followed Artists.csv"
+    csv.write_text(
+        "artist_name,tidal_id\nHelena,111\n",
+        encoding="utf-8",
+    )
+    session = RecordingArtistSession()
+
+    await resolve_and_import_playlist(session, csv, None, ImportStats())
+
+    assert session.added == ["111"], "the artist importer must be reached"
+
+
+async def test_artist_file_is_not_parsed_as_tracks(tmp_path):
+    csv = tmp_path / "Followed Artists.csv"
+    csv.write_text(
+        "artist_name,tidal_id\nHelena,111\n",
+        encoding="utf-8",
+    )
+    session = RecordingArtistSession()
+
+    await resolve_and_import_playlist(session, csv, None, ImportStats())
+
+    assert session.searches == [], "no track search should fire for an artist file"

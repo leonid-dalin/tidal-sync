@@ -310,17 +310,17 @@ def _run_block_command(
     verb: Any,
     verb_name: str,
     references: list[str],
-    force: bool,
+    rail: bool,
 ) -> None:
     """Shared body for the block and unblock commands.
 
     Resolves each reference through ``extract_tidal_id`` and calls the engine
     verb inside ``asyncio.run``. Prints one rich line per id and exits 1 if
     the engine reported any rejected id. ``block`` is destructive at scale:
-    when the resolved id list exceeds the ten-id rail and ``force`` is
-    absent, the operator is asked to retype the profile name and a mismatched
-    answer aborts before the engine is called. ``unblock`` is restorative and
-    skips the rail entirely.
+    when ``rail`` is set and the resolved id list exceeds the ten-id
+    threshold, the operator is asked to retype the profile name and a
+    mismatched answer aborts before the engine is called. ``unblock`` passes
+    ``rail=False`` because the verb is restorative.
     """
     try:
         session = get_session(profile)
@@ -329,7 +329,7 @@ def _run_block_command(
         except ValueError as e:
             raise typer.BadParameter(str(e)) from e
 
-        if not force and len(ids) > _BLOCK_RAIL_THRESHOLD:
+        if rail and len(ids) > _BLOCK_RAIL_THRESHOLD:
             typed = typer.prompt(f"Type '{profile}' to confirm blocking {len(ids)} artists")
             if typed != profile:
                 console.print("[red]Confirmation did not match. Aborting.[/red]")
@@ -368,7 +368,7 @@ def block(
         verb=curation.block_artists,
         verb_name="Blocked",
         references=ids,
-        force=force,
+        rail=not force,
     )
 
 
@@ -385,7 +385,7 @@ def unblock(
         verb=curation.unblock_artists,
         verb_name="Unblocked",
         references=ids,
-        force=True,
+        rail=False,
     )
 
 

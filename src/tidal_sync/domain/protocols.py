@@ -25,13 +25,30 @@ with the right attributes satisfies them.
 from typing import Any, Protocol
 
 
+class Favorites(Protocol):
+    """The subset of tidalapi's favourites surface the engine touches.
+
+    Each method declares the narrow ``str`` form the engine passes. The real
+    tidalapi signatures are wider (e.g. ``add_track`` accepts ``list[str] | str``);
+    the engine fans out per id because a batched call returns one boolean
+    and cannot say which id failed.
+    """
+
+    def add_track(self, item_id: str) -> bool: ...
+    def add_artist(self, item_id: str) -> bool: ...
+    def add_album(self, item_id: str) -> bool: ...
+    def remove_track(self, item_id: str) -> bool: ...
+    def remove_artist(self, item_id: str) -> bool: ...
+    def remove_album(self, item_id: str) -> bool: ...
+
+
 class TidalUser(Protocol):
     """The subset of tidalapi's logged-in user the engine depends on."""
 
     id: int
 
     @property
-    def favorites(self) -> Any: ...
+    def favorites(self) -> Favorites: ...
 
     @property
     def playlists(self) -> Any: ...

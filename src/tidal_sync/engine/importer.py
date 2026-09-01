@@ -231,8 +231,6 @@ async def import_tracks_category_async(
     the fault recovery engine to manage the network uploads.
     """
     tracks = await asyncio.to_thread(parse_csv, file_path, TrackRow)
-    if not tracks:
-        return
 
     initial_added = stats.added
     initial_skipped = stats.skipped
@@ -270,18 +268,30 @@ async def import_tracks_category_async(
 
     # 2. Metadata translation
     async def _resolve_track_metadata_to_id(track: TrackRow) -> None:
-        matched_id = await resolve_track_to_id(
-            session,
-            track_name=track.track_name,
-            artist_name=track.artist_name,
-            tidal_id=str(track.tidal_id) if track.tidal_id else None,
-            isrc=str(track.isrc) if track.isrc else None,
-        )
+        try:
+            matched_id = await resolve_track_to_id(
+                session,
+                track_name=track.track_name,
+                artist_name=track.artist_name,
+                tidal_id=str(track.tidal_id) if track.tidal_id else None,
+                isrc=str(track.isrc) if track.isrc else None,
+            )
+        except Exception as e:
+            # execute_network raises once its retry budget is spent; an
+            # unhandled exception here cancels every sibling task in the
+            # TaskGroup, so one flaky match must not sink the whole run.
+            await stats.add_failed()
+            logger.bind(audit=True).error(
+                "Track match failed", track=track.track_name, error=repr(e)
+            )
+            return
 
         failure_reason = (
             "ISRC mismatch & Text fallback failed" if track.isrc else "Text search failed"
         )
         if matched_id:
+            # Last write wins when several rows resolve to the same id, so a
+            # later dropped-track log line may name the wrong source row.
             staged_tracks_map[matched_id] = track
 
         await decide(
@@ -359,8 +369,6 @@ async def import_albums_async(
     the search and addition operations concurrently.
     """
     albums = await asyncio.to_thread(parse_csv, file_path, AlbumRow)
-    if not albums:
-        return
 
     user = cast(TidalUser, cast(object, session.user))
 
@@ -418,8 +426,6 @@ async def import_artists_async(
     so only followed artists are imported.
     """
     artists = await asyncio.to_thread(parse_csv, file_path, ArtistRow)
-    if not artists:
-        return
 
     user = cast(TidalUser, cast(object, session.user))
 

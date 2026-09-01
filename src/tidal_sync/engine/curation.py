@@ -193,9 +193,7 @@ async def _reconcile_block_write(
     confirmed_applied: list[str] = []
     for item_id in outcome.applied:
         in_present = item_id in present
-        if (expected_present and not in_present) or (
-            not expected_present and in_present
-        ):
+        if (expected_present and not in_present) or (not expected_present and in_present):
             newly_rejected.append(item_id)
         else:
             confirmed_applied.append(item_id)

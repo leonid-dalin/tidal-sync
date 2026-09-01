@@ -14,26 +14,4 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # Contact: infoLeonid@protonMail.com
-"""
-Structural types for the tidalapi objects the engine touches.
-
-tidalapi ships no type information, so these describe the narrow surface the
-engine actually uses. They are structural rather than nominal: any object
-with the right attributes satisfies them.
-"""
-
-from typing import Any, Protocol
-
-
-class TidalUser(Protocol):
-    """The subset of tidalapi's logged-in user the engine depends on."""
-
-    id: int
-
-    @property
-    def favorites(self) -> Any: ...
-
-    @property
-    def playlists(self) -> Any: ...
-
-    def create_playlist(self, title: str, description: str, parent_id: str = "root") -> Any: ...
+"""tidal-sync: a tool for backing up and cloning Tidal libraries."""

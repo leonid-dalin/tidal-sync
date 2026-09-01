@@ -17,11 +17,11 @@ from loguru import logger
 from rich.console import Console
 
 from ..domain.protocols import TidalUser
+from .folders import build_playlist_folder_map
 from .network import execute_network, fetch_all_async, fetch_blocked_artists
 from .parser import (
     UniquePathAllocator,
     normalises_playlist_id,
-    sanitize_filename,
     write_albums_csv_sync,
     write_artists_csv_sync,
     write_tracks_csv_sync,
@@ -59,111 +59,6 @@ async def fetch_and_serialise_tracks(
     rows = await asyncio.to_thread(write_tracks_csv_sync, file_path, tracks)
     logger.bind(audit=True).debug("Snapshot Saved", type=log_type, name=name, rows=rows)
     return rows
-
-
-async def build_playlist_folder_map(session: tidalapi.Session) -> dict[str, str]:
-    """
-    Reconstructs the user's visual folder tree from Tidal's flat backend structure.
-
-    Tidal's V2 API separates folders from playlists. This function queries
-    the flattened folder list and maps each contained playlist UUID to its
-    sanitised parent folder name, allowing the exporter to recreate the exact
-    directory structure on the user's hard drive.
-
-    Args:
-        session (tidalapi.Session): The active, authenticated Tidal session.
-
-    Returns:
-        dict[str, str]: A dictionary mapping normalised playlist UUIDs to folder names.
-    """
-    playlist_folder_map = {}
-    base_params = {
-        "deviceType": "BROWSER",
-        "order": "DATE",
-        "orderDirection": "DESC",
-        "locale": "en_US",
-        "limit": 50,
-    }
-
-    try:
-        folders = []
-        offset = 0
-        while True:
-            folder_params = base_params.copy()
-            folder_params.update({"includeOnly": "FOLDER", "offset": offset})
-
-            folder_res = await execute_network(
-                session.request.request,
-                "GET",
-                "my-collection/playlists/folders/flattened",
-                params=folder_params,
-                base_url=session.config.api_v2_location,
-            )
-
-            if not folder_res.ok:
-                break
-
-            items = folder_res.json().get("items", [])
-            if not items:
-                break
-
-            folders.extend(items)
-            offset += len(items)
-
-            if len(items) < 50:
-                break
-
-        for folder_item in folders:
-            data = folder_item.get("data", {})
-            folder_id = data.get("id") or data.get("uuid") or folder_item.get("id")
-            folder_name = data.get("name") or data.get("title") or folder_item.get("name")
-
-            if not folder_id or not folder_name:
-                continue
-
-            safe_folder_name = sanitize_filename(folder_name)
-            c_offset = 0
-
-            while True:
-                content_params = base_params.copy()
-                content_params.update({"folderId": folder_id, "offset": c_offset})
-
-                content_res = await execute_network(
-                    session.request.request,
-                    "GET",
-                    "my-collection/playlists/folders",
-                    params=content_params,
-                    base_url=session.config.api_v2_location,
-                )
-
-                if not content_res.ok:
-                    break
-
-                items = content_res.json().get("items", [])
-                if not items:
-                    break
-
-                for item in items:
-                    item_data = item.get("data", {})
-                    pl_uuid = item_data.get("uuid") or item_data.get("id")
-
-                    if not pl_uuid and "playlist" in item and isinstance(item["playlist"], dict):
-                        pl_uuid = item["playlist"].get("uuid") or item["playlist"].get("id")
-                    if not pl_uuid:
-                        pl_uuid = item.get("id") or item.get("uuid")
-
-                    if pl_uuid:
-                        normalized_uuid = normalises_playlist_id(pl_uuid)
-                        playlist_folder_map[normalized_uuid] = safe_folder_name
-
-                c_offset += len(items)
-                if len(items) < 50:
-                    break
-
-    except Exception as e:
-        logger.warning(f"Could not construct folder map from V2 API: {e}")
-
-    return playlist_folder_map
 
 
 async def export_user_favourites_to_disk(session: tidalapi.Session, base_dir: Path) -> None:

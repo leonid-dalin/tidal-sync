@@ -1,11 +1,101 @@
 """Curation engine: favourites and artist blocks."""
 
+import time
+
 import pytest
+import requests
 
 from tests.fakes import FakeSession
 from tidal_sync.domain.exceptions import TidalRateLimitError, TidalTransientError
 from tidal_sync.domain.results import UploadOutcome
 from tidal_sync.engine import curation
+
+
+def _http_error(status: int, body: str = "") -> requests.HTTPError:
+    """Builds an HTTPError carrying a real response, the way tidalapi does.
+
+    The response object is what `classify_error` reads, so the test exercises
+    the same code path as a live `raise_for_status()` call.
+    """
+    response = requests.Response()
+    response.status_code = status
+    response._content = body.encode()
+    return requests.HTTPError(body or str(status), response=response)
+
+
+class FakeBlockSession:
+    """Records per-id block/unblock requests and fails on demand.
+
+    Modelled on `_BlockWireSession` below. `raise_for` triggers a one-shot
+    HTTPError on the listed ids; `fail_times` raises the same status the
+    listed number of times, then lets the call succeed; `silent_noop` lets
+    the call return a 200 that the engine currently treats as success. The
+    request callable is a plain `def` because `execute_network` runs it
+    inside `asyncio.to_thread`.
+    """
+
+    class _Config:
+        api_v2_location = "https://api.tidal.com/v2"
+
+    config = _Config()
+    country_code = "GB"
+
+    def __init__(
+        self,
+        user_id: int = 4242,
+        raise_for: dict[str, requests.HTTPError] | None = None,
+        fail_times: dict[str, int] | None = None,
+        fail_status: int = 503,
+        silent_noop: set[str] | None = None,
+    ):
+        self.user_id = user_id
+        self.calls: list[tuple] = []
+        self.attempts: dict[str, int] = {}
+        self._raise_for = raise_for or {}
+        self._fail_times = fail_times or {}
+        self._fail_status = fail_status
+        self._silent_noop = silent_noop or set()
+
+    @property
+    def user(self):
+        class _U:
+            def __init__(self, uid):
+                self.id = uid
+
+        return _U(self.user_id)
+
+    @property
+    def request(self):
+        session = self
+
+        class _Req:
+            def request(self, method, path, params=None, data=None, base_url=None):
+                artist_id = (data or {}).get("artistId")
+                if artist_id is None:
+                    parts = path.rsplit("/", 1)
+                    artist_id = parts[1] if len(parts) == 2 else path
+                session.calls.append((method, path, params, data, base_url))
+                session.attempts[artist_id] = session.attempts.get(artist_id, 0) + 1
+
+                if artist_id in session._raise_for:
+                    raise session._raise_for[artist_id]
+
+                remaining = session._fail_times.get(artist_id, 0)
+                if remaining > 0:
+                    session._fail_times[artist_id] = remaining - 1
+                    raise _http_error(session._fail_status, f"server said {session._fail_status}")
+
+                class _Resp:
+                    def __init__(self, ok):
+                        self.ok = ok
+
+                    def __bool__(self):
+                        return self.ok
+
+                ok = artist_id not in session._silent_noop
+                return _Resp(ok)
+
+        return _Req()
 
 
 def test_upload_outcome_is_importable_from_domain():
@@ -282,3 +372,71 @@ async def test_fetch_blocked_artist_ids_returns_string_ids():
     # Order preserved, ints stringified, no set() collapse.
     assert ids == ["29002266", "4894212"]
     assert fake.calls == 1
+
+
+# --- Network gate visibility: the block writes must surface HTTP failures
+# so classify_error can engage the abuse lock, retry a 5xx, and treat a
+# non-retryable 4xx as a per-id rejection. Catching HTTPError inside the
+# action hides all three behaviours.
+
+
+async def test_a_403_abuse_lock_is_not_swallowed_as_a_per_id_rejection():
+    """classify_error engages a 1800s global lock on an abuse 403. Catching
+    HTTPError inside the action would hide it and keep writing.
+    """
+    from tidal_sync.engine import network
+
+    gate = network.GlobalTidalGate()
+    network.GLOBAL_GATE = gate
+
+    async def _no_pre_flight():
+        return None
+
+    async def _record_backoff(seconds, reason=""):
+        # The real gate would sleep 1800s; capture the call without sleeping.
+        gate.backoff_until = max(gate.backoff_until, time.monotonic() + seconds)
+
+    gate.pre_flight_check = _no_pre_flight  # type: ignore[method-assign]
+    gate.trigger_backoff = _record_backoff  # type: ignore[method-assign]
+
+    session = FakeBlockSession(raise_for={"2": _http_error(403, "abuse detected 11003")})
+
+    with pytest.raises(BaseExceptionGroup) as excinfo:
+        await curation.block_artists(session, ["1", "2", "3"])
+    assert excinfo.group_contains(TidalRateLimitError)
+
+    network.GLOBAL_GATE = network.GlobalTidalGate()
+
+
+async def test_a_500_is_retried_by_the_gate_not_recorded_as_rejected():
+    """A 503 is retryable; the gate should retry until the call succeeds."""
+    from tidal_sync.engine import network
+
+    gate = network.GlobalTidalGate()
+    network.GLOBAL_GATE = gate
+
+    async def _no_sleep(_seconds):
+        return None
+
+    original_sleep = network.asyncio.sleep
+    network.asyncio.sleep = _no_sleep  # type: ignore[assignment]
+    try:
+        session = FakeBlockSession(fail_times={"2": 2}, fail_status=503)
+
+        outcome = await curation.block_artists(session, ["1", "2"])
+
+        assert outcome.applied == ["1", "2"]
+        assert session.attempts["2"] == 3, "the gate retried rather than giving up"
+    finally:
+        network.asyncio.sleep = original_sleep  # type: ignore[assignment]
+        network.GLOBAL_GATE = network.GlobalTidalGate()
+
+
+async def test_a_400_is_this_ids_problem_and_the_others_still_apply():
+    """A non-retryable 4xx must reach the per-id boundary, not the TaskGroup."""
+    session = FakeBlockSession(raise_for={"2": _http_error(400, "bad request")})
+
+    outcome = await curation.block_artists(session, ["1", "2", "3"])
+
+    assert outcome.applied == ["1", "3"]
+    assert outcome.rejected == ["2"]

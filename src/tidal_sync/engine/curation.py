@@ -27,7 +27,7 @@ batch size.
 """
 
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import requests
 import tidalapi
@@ -39,6 +39,8 @@ from ..domain.results import UploadOutcome
 from .network import execute_network, fetch_blocked_artists
 from .workers import run_headless_tasks_async
 
+_BLOCK_METHOD = Literal["POST", "DELETE"]
+
 
 async def _apply_per_id(ids: list[str], action: Callable[[str], Any], label: str) -> UploadOutcome:
     """Runs `action` once per id, concurrently, and reports each outcome.
@@ -49,13 +51,22 @@ async def _apply_per_id(ids: list[str], action: Callable[[str], Any], label: str
     problem: they propagate, cancel the sibling tasks through the TaskGroup,
     and abort the run rather than being misreported as hundreds of rejected
     items.
+
+    `requests.HTTPError` is also a per-id outcome: `execute_network` re-raises
+    a non-retryable HTTPError unchanged once `classify_error` returns None, so
+    catching it here (after the gate has already had its say) is safe and is
+    the right layer for a per-id classification.
     """
     results: dict[str, bool] = {}
 
     async def _one(item_id: str) -> None:
         try:
             ok = await execute_network(action, item_id)
-        except (TidalTransientError, TidalPoisonError) as e:
+        # The HTTPError that lands here came out of execute_network unchanged:
+        # classify_error already classified it (and either retried, or returned
+        # None for a non-retryable status). Catching it at this layer records
+        # it as a per-id rejection without re-entering the gate.
+        except (TidalTransientError, TidalPoisonError, requests.HTTPError) as e:
             logger.bind(audit=True).error("{label} failed", label=label, id=item_id, error=repr(e))
             results[item_id] = False
             return
@@ -107,43 +118,27 @@ async def unlike_albums(session: tidalapi.Session, ids: list[str]) -> UploadOutc
     return await _apply_per_id(ids, user.favorites.remove_album, "Unlike album")
 
 
-def _block_action(session: tidalapi.Session) -> Callable[[str], Any]:
-    """Builds the per-id POST action for blocking an artist.
-
-    tidalapi raises an HTTPError on 4xx, which would otherwise cancel the
-    sibling tasks through the TaskGroup. The probe did not exercise 4xx on
-    this endpoint, but a 4xx is this id's outcome: it is recorded as a
-    rejection rather than aborting the run.
+def _block_write_action(
+    session: tidalapi.Session, method: _BLOCK_METHOD, per_artist_path: bool
+) -> Callable[[str], Any]:
+    """Builds the per-id block write. Exceptions are deliberately not caught
+    here: `execute_network` must see them so `classify_error` can engage the
+    abuse lock, retry a 5xx, and fail fast on a non-retryable status. The
+    per-id boundary lives in `_apply_per_id`, outside the gate.
     """
     user = cast(TidalUser, cast(object, session.user))
-    path = f"users/{user.id}/blocks/artists"
+    base_path = f"users/{user.id}/blocks/artists"
 
     def _action(artist_id: str) -> Any:
-        try:
-            return session.request.request(
-                "POST",
-                path,
-                params=None,
-                data={"artistId": artist_id},
-            )
-        except requests.HTTPError:
-            return False
-
-    return _action
-
-
-def _unblock_action(session: tidalapi.Session) -> Callable[[str], Any]:
-    """Builds the per-id DELETE action for unblocking an artist."""
-    user = cast(TidalUser, cast(object, session.user))
-
-    def _action(artist_id: str) -> Any:
-        try:
-            return session.request.request(
-                "DELETE",
-                f"users/{user.id}/blocks/artists/{artist_id}",
-            )
-        except requests.HTTPError:
-            return False
+        path = f"{base_path}/{artist_id}" if per_artist_path else base_path
+        if per_artist_path:
+            return session.request.request(method, path)
+        return session.request.request(
+            method,
+            path,
+            params=None,
+            data={"artistId": artist_id},
+        )
 
     return _action
 
@@ -156,7 +151,7 @@ async def block_artists(session: tidalapi.Session, ids: list[str]) -> UploadOutc
     with an empty body. The follow-up GET is the network's job; this engine
     trusts the per-id response.
     """
-    return await _apply_per_id(ids, _block_action(session), "Block artist")
+    return await _apply_per_id(ids, _block_write_action(session, "POST", False), "Block artist")
 
 
 async def unblock_artists(session: tidalapi.Session, ids: list[str]) -> UploadOutcome:
@@ -167,7 +162,7 @@ async def unblock_artists(session: tidalapi.Session, ids: list[str]) -> UploadOu
     body. The per-artist path is the correct shape; a body-bearing DELETE on
     the collection would be a different surface.
     """
-    return await _apply_per_id(ids, _unblock_action(session), "Unblock artist")
+    return await _apply_per_id(ids, _block_write_action(session, "DELETE", True), "Unblock artist")
 
 
 async def fetch_blocked_artist_ids(session: tidalapi.Session) -> list[str]:

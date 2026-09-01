@@ -87,24 +87,17 @@ async def test_exhausted_retries_raise_a_typed_error():
         await network.execute_network(api, max_retries=2, base_delay=0)
 
 
-async def test_abuse_lock_keeps_its_full_duration():
+async def test_abuse_lock_keeps_its_full_duration(gate):
     """The 403 abuse lock must not collapse to the default backoff."""
-    original = network.GLOBAL_GATE
-    gate = network.GlobalTidalGate()
-    network.GLOBAL_GATE = gate
 
-    try:
+    def api():
+        response = _http_403_abuse()
+        error = requests.exceptions.HTTPError("abuse detected")
+        error.response = response
+        raise error
 
-        def api():
-            response = _http_403_abuse()
-            error = requests.exceptions.HTTPError("abuse detected")
-            error.response = response
-            raise error
+    with pytest.raises(TidalRateLimitError):
+        await network.execute_network(api, max_retries=1, base_delay=0)
 
-        with pytest.raises(TidalRateLimitError):
-            await network.execute_network(api, max_retries=1, base_delay=0)
-
-        # A 30 minute lock must survive as a lock, not collapse to a second.
-        assert gate.backoff_until > 0
-    finally:
-        network.GLOBAL_GATE = original
+    # A 30 minute lock must survive as a lock, not collapse to a second.
+    assert gate.backoff_until > 0

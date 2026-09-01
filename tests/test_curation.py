@@ -419,32 +419,23 @@ async def test_fetch_blocked_artist_ids_returns_string_ids():
 # action hides all three behaviours.
 
 
-async def test_a_403_abuse_lock_is_not_swallowed_as_a_per_id_rejection():
+async def test_a_403_abuse_lock_is_not_swallowed_as_a_per_id_rejection(gate, monkeypatch):
     """classify_error engages a 1800s global lock on an abuse 403. Catching
     HTTPError inside the action would hide it and keep writing.
     """
     from tidal_sync.engine import network
 
-    gate = network.GlobalTidalGate()
-    network.GLOBAL_GATE = gate
-
-    async def _no_pre_flight():
+    async def _no_sleep(_seconds):
         return None
 
-    async def _record_backoff(seconds, reason=""):
-        # The real gate would sleep 1800s; capture the call without sleeping.
-        gate.backoff_until = max(gate.backoff_until, time.monotonic() + seconds)
-
-    gate.pre_flight_check = _no_pre_flight  # type: ignore[method-assign]
-    gate.trigger_backoff = _record_backoff  # type: ignore[method-assign]
-
+    monkeypatch.setattr(network.asyncio, "sleep", _no_sleep)
     session = FakeBlockSession(raise_for={"2": _http_error(403, "abuse detected 11003")})
 
     with pytest.raises(BaseExceptionGroup) as excinfo:
         await curation.block_artists(session, ["1", "2", "3"])
     assert excinfo.group_contains(TidalRateLimitError)
 
-    network.GLOBAL_GATE = network.GlobalTidalGate()
+    assert gate.backoff_until > time.monotonic(), "the abuse lock was engaged"
 
 
 async def test_a_500_is_retried_by_the_gate_not_recorded_as_rejected():

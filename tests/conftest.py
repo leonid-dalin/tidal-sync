@@ -25,3 +25,22 @@ def log_records():
     handler = logger.add(records.append, level="DEBUG", format="{message}")
     yield records
     logger.remove(handler)
+
+
+@pytest.fixture
+def gate():
+    """A fresh global gate, installed and restored.
+
+    GLOBAL_GATE is a module-level singleton: a test that triggers the 1800s
+    abuse lock would otherwise leave every later test in the process sleeping
+    at its pre-flight check. Three test modules each grew their own swap
+    idiom; this is the one of them.
+    """
+    from tidal_sync.engine import network
+
+    original = network.GLOBAL_GATE
+    network.GLOBAL_GATE = network.GlobalTidalGate()
+    try:
+        yield network.GLOBAL_GATE
+    finally:
+        network.GLOBAL_GATE = original

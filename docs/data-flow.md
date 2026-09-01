@@ -48,3 +48,9 @@ Throughout this process, the `logger.py` module tracks every state change (match
 Because the tool handles untrusted string data (like user-generated track names), it bypasses standard logging templates. It serialises the data directly into a JSON object using `orjson` and stashes it inside the log record's `extra` dictionary. 
 
 A background thread dequeues these records, passes them through a regex filter to scrub any leaked Tidal OAuth session IDs, and writes them to a local `.jsonl` audit file.
+
+## 6. Folder identity (export to import round trip)
+
+Folder names are sanitised before they become on-disk directory names. `build_playlist_folder_map` runs each raw Tidal folder name through `sanitize_filename`, so `'AC/DC Mixes'` becomes the directory `'AC_DC Mixes'`. On import the sanitised directory name is passed to `ensure_v2_folder_exists`, which matches it against the *sanitised* form of each raw Tidal name rather than the raw name, so an existing folder is reused instead of duplicated.
+
+Folder identity survives the round trip only up to sanitisation. Two distinct Tidal folders whose raw names collapse to the same sanitised string (for example `'A/B'` and `'A_B'`) map to the same directory and will be merged on import. This is an accepted limitation of using the file system as the folder key.

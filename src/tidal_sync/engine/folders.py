@@ -18,7 +18,7 @@ import tidalapi
 from loguru import logger
 
 from .network import execute_network
-from .parser import normalises_playlist_id
+from .parser import normalises_playlist_id, sanitize_filename
 
 _V2_PATH = "my-collection/playlists/folders"
 _PAGE_SIZE = 50
@@ -137,8 +137,6 @@ async def fetch_folder_playlists(session: tidalapi.Session, folder_id: str) -> l
 
 async def build_playlist_folder_map(session: tidalapi.Session) -> dict[str, str]:
     """Maps normalised playlist UUID -> sanitised parent folder name."""
-    from .parser import sanitize_filename
-
     folder_map: dict[str, str] = {}
     try:
         for folder_id, folder_name in await fetch_v2_folders(session):
@@ -167,7 +165,9 @@ async def create_folder(session: tidalapi.Session, name: str) -> str | None:
             name=name,
             trns="",
         )
-        payload = res.json() if getattr(res, "ok", False) else None
+        # tidalapi's request() raises on any non-2xx, so a returned response is
+        # always ok. There is no success flag to check.
+        payload = res.json()
         if not payload:
             return None
         data = payload.get("data", payload)
@@ -184,7 +184,7 @@ async def assign_playlist(session: tidalapi.Session, playlist_id: str, folder_id
     """
     trn = f"trn:playlist:{normalises_playlist_id(playlist_id)}"
     try:
-        res = await execute_network(
+        await execute_network(
             _v2,
             session,
             "PUT",
@@ -193,7 +193,8 @@ async def assign_playlist(session: tidalapi.Session, playlist_id: str, folder_id
             folderId=folder_id,
             trns=trn,
         )
-        return bool(getattr(res, "ok", False))
+        # tidalapi's request() raises on any non-2xx, so reaching here means success.
+        return True
     except Exception as e:
         logger.warning("Folder assignment failed: {error}", error=repr(e))
         return False
@@ -202,7 +203,7 @@ async def assign_playlist(session: tidalapi.Session, playlist_id: str, folder_id
 async def remove_folder(session: tidalapi.Session, folder_id: str) -> bool:
     """Deletes a V2 folder. Returns True on success."""
     try:
-        res = await execute_network(
+        await execute_network(
             _v2,
             session,
             "PUT",
@@ -210,16 +211,22 @@ async def remove_folder(session: tidalapi.Session, folder_id: str) -> bool:
             data=b"",
             trns=f"trn:folder:{folder_id}",
         )
-        return bool(getattr(res, "ok", False))
+        # tidalapi's request() raises on any non-2xx, so reaching here means success.
+        return True
     except Exception as e:
         logger.warning("Folder removal failed: {error}", error=repr(e))
         return False
 
 
 async def ensure_v2_folder_exists(session: tidalapi.Session, name: str) -> str | None:
-    """Returns the id of the folder named `name`, creating it if absent."""
+    """Returns the id of the folder named `name`, creating it if absent.
+
+    `name` is the sanitised directory name (slashes and illegal characters
+    already stripped). Tidal stores the raw name, so compare against the
+    sanitised form to avoid creating a duplicate of an existing folder.
+    """
     for folder_id, folder_name in await fetch_v2_folders(session):
-        if folder_name == name:
+        if sanitize_filename(folder_name) == name:
             return folder_id
     return await create_folder(session, name)
 

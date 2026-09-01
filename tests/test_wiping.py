@@ -121,3 +121,36 @@ async def test_requested_is_an_upper_bound_on_deleted_plus_failed(monkeypatch):
 
     report = await purge_target_category_async(FolderSession(), ClearTarget.ALL)
     assert report.deleted + report.failed <= report.requested
+
+
+async def test_dry_run_prints_each_category_it_counts(capsys, monkeypatch):
+    # m-1: a dry run names every category it counted, so the dry report
+    # mirrors the live one and the user can predict the destructive run.
+    folders = [("f1", "A"), ("f2", "B")]
+
+    async def _fake_fetch_v2_folders(session):
+        return list(folders)
+
+    async def _fake_remove_folder(session, folder_id):
+        return True
+
+    monkeypatch.setattr("tidal_sync.engine.wiping.fetch_v2_folders", _fake_fetch_v2_folders)
+    monkeypatch.setattr("tidal_sync.engine.wiping.remove_folder", _fake_remove_folder)
+
+    await purge_target_category_async(FolderSession(), ClearTarget.ALL, dry_run=True)
+    out = capsys.readouterr().out
+
+    assert "Would remove 1 playlists" in out, out
+    assert "Would remove 2 folders" in out, out
+
+
+async def test_purge_v2_folders_helper_requires_explicit_dry_run():
+    # m-4: the private helper has no default for dry_run. The single caller
+    # passes an explicit value, and the helper cannot choose the destructive
+    # path by omission.
+    import inspect
+
+    from tidal_sync.engine.wiping import _purge_v2_folders_async
+
+    sig = inspect.signature(_purge_v2_folders_async)
+    assert sig.parameters["dry_run"].default is inspect.Parameter.empty

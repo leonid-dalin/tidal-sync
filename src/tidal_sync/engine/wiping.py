@@ -42,9 +42,16 @@ class PurgeReport:
 
 
 async def _purge_v2_folders_async(
-    session: tidalapi.Session, report: PurgeReport, dry_run: bool = False
+    session: tidalapi.Session, report: PurgeReport, dry_run: bool
 ) -> None:
-    """Deletes every V2 folder, accounting for each outcome."""
+    """Deletes every V2 folder, accounting for each outcome.
+
+    The ``dry_run`` flag has no default: this helper has exactly one caller and
+    must always receive an explicit value, so the destructive path is not
+    chosen by omission. The flag is mirrored by ``_clear_category_async`` and
+    counts and names targets in the same order whether live or dry, so the
+    user can predict the destructive run from the dry report.
+    """
     try:
         folders = await fetch_v2_folders(session)
     except Exception as e:
@@ -54,13 +61,13 @@ async def _purge_v2_folders_async(
     if not folders:
         return
 
-    # Counted even on a dry run so the report reflects every target.
+    # Counted and named even on a dry run so the report mirrors a live run.
     report.requested += len(folders)
+    verb = "Would remove" if dry_run else "Removing"
+    console.print(f"[cyan]{verb} {len(folders)} folders...[/cyan]")
 
     if dry_run:
         return
-
-    console.print(f"[cyan]Removing {len(folders)} folders...[/cyan]")
 
     async def _delete(entry: tuple[str, str]) -> None:
         folder_id, folder_name = entry
@@ -109,7 +116,8 @@ async def purge_target_category_async(
             return
 
         report.requested += len(items)
-        console.print(f"[cyan]Removing {len(items)} {category_name}...[/cyan]")
+        verb = "Would remove" if dry_run else "Removing"
+        console.print(f"[cyan]{verb} {len(items)} {category_name}...[/cyan]")
 
         if dry_run:
             return

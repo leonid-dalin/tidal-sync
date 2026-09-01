@@ -58,33 +58,22 @@ def test_engine_access_pattern_matches_the_library(monkeypatch):
 
 
 def test_user_create_playlist_shape():
-    """Pins the create_playlist contract the importer calls.
+    """Pins the create_playlist contract against the real tidalapi library.
 
-    importer.py calls user.create_playlist(name, description). The protocol
-    and any fake must expose that signature, returning a playlist-like object
-    with an id. A drift in tidalapi's user API breaks here first.
+    The TidalUser protocol must match the parameter names of
+    tidalapi.user.LoggedInUser.create_playlist. A drift in either side is
+    caught here before the importer calls the wrong method.
     """
+    import inspect
 
-    class FakePlaylist:
-        id = "pl.123"
+    import tidalapi
 
-    class FakeUser:
-        def create_playlist(self, title: str, description: str, parent_id: str = "root"):
-            assert isinstance(title, str)
-            assert isinstance(description, str)
-            return FakePlaylist()
-
-    # The TidalUser protocol is structural (not runtime_checkable), so we
-    # pin the surface directly: a compliant user must expose create_playlist
-    # with the (title, description) shape the importer calls.
     from tidal_sync.domain.protocols import TidalUser
 
-    user = FakeUser()
-    playlist = user.create_playlist("My Playlist", "Imported via tidal-sync <3")
+    real_params = list(inspect.signature(tidalapi.user.LoggedInUser.create_playlist).parameters)
+    declared_params = list(inspect.signature(TidalUser.create_playlist).parameters)
 
-    assert hasattr(user, "create_playlist")
-    assert "title" in TidalUser.create_playlist.__code__.co_varnames
-    assert playlist.id
+    assert real_params == declared_params
 
 
 def test_fake_search_results_share_the_real_shape():

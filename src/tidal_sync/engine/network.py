@@ -7,6 +7,7 @@ asynchronous tasks. It intercepts HTTP 429 (Too Many Requests) and HTTP 403
 """
 
 import asyncio
+import inspect
 import time
 from collections.abc import Callable
 from typing import Any
@@ -115,6 +116,20 @@ async def fetch_all_async(api_method: Any, **kwargs: Any) -> list[Any]:
     return await execute_network(_fetch_all_sync, api_method, **kwargs)
 
 
+def _accepts_pagination(api_method: Any) -> bool:
+    """Reports whether the callable's signature takes limit and offset.
+
+    Deciding this from the signature rather than by catching TypeError means
+    a TypeError raised inside the API call is never mistaken for an endpoint
+    that simply does not paginate.
+    """
+    try:
+        parameters = inspect.signature(api_method).parameters
+    except (TypeError, ValueError):
+        return False
+    return "limit" in parameters and "offset" in parameters
+
+
 def _fetch_all_sync(api_method: Any, **kwargs: Any) -> list[Any]:
     """
     The synchronous core logic for exhaustive API pagination.
@@ -130,18 +145,17 @@ def _fetch_all_sync(api_method: Any, **kwargs: Any) -> list[Any]:
     Returns:
         list[Any]: A consolidated list of all recovered items.
     """
-    items = []
+    items: list[Any] = []
     offset = 0
     limit = 50
-    last_chunk_ids = []
+    last_chunk_ids: list[Any] = []
+
+    if not _accepts_pagination(api_method):
+        res = api_method(**kwargs)
+        return res if isinstance(res, list) else list(res)
 
     while True:
-        try:
-            chunk = api_method(limit=limit, offset=offset, **kwargs)
-        except TypeError:
-            res = api_method(**kwargs)
-            return res if isinstance(res, list) else list(res)
-
+        chunk = api_method(limit=limit, offset=offset, **kwargs)
         if not chunk:
             break
 

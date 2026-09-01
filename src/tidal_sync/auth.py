@@ -41,6 +41,7 @@ Attributes:
 
 import json
 import os
+import re
 import secrets
 import stat
 from datetime import datetime
@@ -57,18 +58,37 @@ console = Console()
 CONFIG_DIR = Path.home() / ".tidal_sync"
 
 
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
 def get_token_path(profile: str) -> Path:
     """
     Resolves the absolute file path for a profile's token file.
+
     Creates the base configuration directory if it does not already exist.
+
+    The profile name is interpolated straight into a filename and is
+    attacker-controllable via --profile, so it is restricted to a safe
+    character set. Without this, `--profile ../../tmp/x` escapes the config
+    directory and `logout` would then zero-fill an arbitrary user file.
 
     Args:
         profile (str): The identifier string for the account profile.
 
     Returns:
         Path: The fully qualified path to the JSON token file.
+
+    Raises:
+        TidalAuthenticationError: If the name contains a path separator,
+            is empty, or exceeds 64 characters.
     """
-    CONFIG_DIR.mkdir(exist_ok=True)
+    if not _PROFILE_NAME_RE.match(profile):
+        raise TidalAuthenticationError(
+            f"Invalid profile name {profile!r}. "
+            "Use 1-64 characters: letters, digits, '_', '-' or '.'."
+        )
+
+    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     return CONFIG_DIR / f"{profile}.json"
 
 
@@ -118,10 +138,15 @@ def _save_session_to_disk(session: tidalapi.Session, token_file: Path) -> None:
         "user_id": session.user.id,
     }
 
-    with open(token_file, "w") as f:
+    # Open with the final mode from the outset. Writing first and chmod-ing
+    # afterwards leaves a window where the token is readable by others.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(token_file, flags, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(token_data, f)
+        f.flush()
+        os.fsync(f.fileno())
 
-    # Enforce strict file permissions: Read/Write for Owner ONLY (Linux/macOS)
     if os.name == "posix":
         os.chmod(token_file, stat.S_IRUSR | stat.S_IWUSR)
 

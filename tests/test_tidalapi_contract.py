@@ -46,8 +46,7 @@ def test_engine_access_pattern_matches_the_library(monkeypatch):
     monkeypatch.setattr(
         tidalapi.request.Requests,
         "request",
-        lambda self, method, path, params=None, data=None, headers=None,
-        base_url=None: Response(),
+        lambda self, method, path, params=None, data=None, headers=None, base_url=None: Response(),
     )
 
     session = tidalapi.Session()

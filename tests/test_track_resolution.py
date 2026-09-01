@@ -5,17 +5,13 @@ result, every track lacking a direct Tidal ID is reported as not found,
 which is silent data loss dressed up as a clean run.
 """
 
-import pytest
-
-from tidal_sync.engine.importer import resolve_track_to_id
 from tests.fakes import FakeSession, FakeTrack, make_search_results
+from tidal_sync.engine.importer import resolve_track_to_id
 
 
 async def test_isrc_match_returns_the_tidal_id():
     """F40: an ISRC hit must resolve. getattr() on a dict made this fail."""
-    session = FakeSession(
-        make_search_results(tracks=[FakeTrack(id=4242, name="Helena")])
-    )
+    session = FakeSession(make_search_results(tracks=[FakeTrack(id=4242, name="Helena")]))
 
     track_id = await resolve_track_to_id(
         session, track_name="Helena", artist_name="MCR", isrc="ISRC1"
@@ -26,13 +22,9 @@ async def test_isrc_match_returns_the_tidal_id():
 
 async def test_text_fallback_returns_the_tidal_id():
     """F40: the fallback path has the same defect as the ISRC path."""
-    session = FakeSession(
-        make_search_results(tracks=[FakeTrack(id=777, name="Helena")])
-    )
+    session = FakeSession(make_search_results(tracks=[FakeTrack(id=777, name="Helena")]))
 
-    track_id = await resolve_track_to_id(
-        session, track_name="Helena", artist_name="MCR", isrc=None
-    )
+    track_id = await resolve_track_to_id(session, track_name="Helena", artist_name="MCR", isrc=None)
 
     assert track_id == "777"
 
@@ -41,9 +33,7 @@ async def test_direct_id_skips_the_network():
     """A known Tidal ID must not cost a search call."""
     session = FakeSession(make_search_results(tracks=[FakeTrack(id=1)]))
 
-    track_id = await resolve_track_to_id(
-        session, track_name="X", artist_name="Y", tidal_id="99"
-    )
+    track_id = await resolve_track_to_id(session, track_name="X", artist_name="Y", tidal_id="99")
 
     assert track_id == "99"
     assert not [call for call in session.calls if call[0] == "search"]
@@ -52,9 +42,7 @@ async def test_direct_id_skips_the_network():
 async def test_isrc_is_tried_before_text():
     session = FakeSession(make_search_results(tracks=[FakeTrack(id=5)]))
 
-    await resolve_track_to_id(
-        session, track_name="Helena", artist_name="MCR", isrc="ISRC1"
-    )
+    await resolve_track_to_id(session, track_name="Helena", artist_name="MCR", isrc="ISRC1")
 
     assert session.calls[0] == ("search", ("isrc:ISRC1",), {})
 

@@ -4,8 +4,6 @@ A truncated backup that the exporter reports as success is worse than a
 loud failure, since the user only finds out when they try to restore.
 """
 
-from pathlib import Path
-
 import pytest
 
 from tests.fakes import FakeAlbum, FakeArtist, FakeTrack

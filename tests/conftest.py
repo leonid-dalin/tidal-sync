@@ -4,7 +4,6 @@ loguru sinks are process-global, so every test starts from a clean set.
 """
 
 import pytest
-
 from loguru import logger
 
 

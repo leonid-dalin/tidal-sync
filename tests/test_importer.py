@@ -5,14 +5,11 @@ not cost the user the rest of the run, nor the summary that tells them
 what happened.
 """
 
-from pathlib import Path
-
 import pytest
 
 from tidal_sync.domain.models import TrackRow
 from tidal_sync.engine.importer import import_collection_from_disk
 from tidal_sync.engine.parser import parse_csv
-from tidal_sync.engine.workers import ImportStats
 
 
 class StubSession:
@@ -43,8 +40,7 @@ def test_a_headerless_file_is_rejected(tmp_path):
 async def test_one_bad_file_does_not_abort_the_directory(tmp_path, capsys):
     good = tmp_path / "Good.csv"
     good.write_text(
-        "track_name,artist_name,album_name,isrc,tidal_id\n"
-        "Song,Artist,Album,ISRC1,1\n",
+        "track_name,artist_name,album_name,isrc,tidal_id\nSong,Artist,Album,ISRC1,1\n",
         encoding="utf-8",
     )
     bad = tmp_path / "Bad.csv"

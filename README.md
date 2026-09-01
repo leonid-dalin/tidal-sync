@@ -34,15 +34,15 @@ All guides and technical references live in the `docs/` directory:
 
 ## ✨ Key Features
 
-* Backs up your **custom playlists, liked songs, saved albums,** and **followed artists** to local CSV files (V2 folder structure preserved).
-* Scans your destination before importing and skips tracks you already own.
-* Point the tool at a backup directory and it automatically finds and imports every CSV inside.
-* Log into multiple accounts to clone data from a "Source" account to a "Destination" account.
-* Matches tracks with exact `Tidal IDs` and `ISRC` codes, falling back to text search only when metadata is missing.
-* Runs matching and uploads concurrently through an `asyncio` worker pool with a rate-limit gate, keeping bulk imports fast without tripping Tidal's abuse defences.
-* If a batch upload fails because Tidal region-locks a track, it isolates and drops the broken track, uploading the rest.
-* Emits machine-readable JSONL audit logs so you can see exactly which tracks were added, skipped, or failed.
-* Performs a logical zero-fill overwrite on session tokens before deleting them, mitigating disk data recovery.
+* Backs up **playlists, liked songs, albums, and followed artists** to local CSV, keeping the V2 folder layout intact.
+* Skips tracks you already own, so restores never duplicate.
+* Point it at a folder and it imports every CSV it finds.
+* Clone between accounts: export from "Source", import into "Destination".
+* Matches on exact `Tidal IDs` and `ISRC` codes, with text search only as fallback.
+* Concurrent `asyncio` uploads behind a rate-limit gate keep bulk jobs fast and safe.
+* Region-locked tracks are isolated and dropped, not the whole batch.
+* JSONL audit logs show every track added, skipped, or failed.
+* Tokens get a zero-fill overwrite before deletion.
 
 ## 🚀 Installation
 

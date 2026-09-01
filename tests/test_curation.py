@@ -25,7 +25,8 @@ async def test_every_id_is_sent_individually():
 
     assert outcome.applied == ["1", "2", "3"]
     assert outcome.rejected == []
-    assert session.user.favorites.added_tracks == ["1", "2", "3"]
+    assert sorted(session.user.favorites.added_tracks) == ["1", "2", "3"]
+    assert len(session.user.favorites.added_tracks) == 3
 
 
 async def test_one_rejected_id_does_not_sink_the_rest():

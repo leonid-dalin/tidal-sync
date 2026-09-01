@@ -32,11 +32,6 @@ class TrackRow(BaseModel):
         playlist_name (str | None): The destination or source playlist.
         isrc (str | None): The International Standard Recording Code for high-fidelity matching.
         tidal_id (str | None): A direct Tidal database ID.
-
-    Example:
-        >>> row = TrackRow(**{"Track name": "Helena", "Artist Name(s)": "My Chemical Romance"})
-        >>> print(row.search_query)
-        'Helena My Chemical Romance'
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -66,20 +61,6 @@ class TrackRow(BaseModel):
         default=None,
         validation_alias=AliasChoices("Tidal - id", "tidal id", "tidal_id", "id"),
     )
-
-    @property
-    def search_query(self) -> str:
-        """
-        Generate a clean fallback search string.
-
-        Strips out secondary artists to give the Tidal search engine a
-        better chance of finding the correct track.
-
-        Returns:
-            str: A concatenated string of the track and primary artist.
-        """
-        primary_artist = self.artist_name.split(", ")[0].strip() if self.artist_name else ""
-        return f"{self.track_name} {primary_artist}".strip()
 
 
 class AlbumRow(BaseModel):

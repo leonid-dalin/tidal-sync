@@ -44,6 +44,18 @@ def test_traversal_is_still_blocked():
     assert "\\" not in sanitize_filename("..\\..\\windows")
 
 
+def test_leading_dots_are_stripped():
+    # The caret anchors at the start, so leading dots (a traversal component
+    # once separators are replaced) are removed rather than treated literally.
+    assert sanitize_filename("...hidden") == "hidden"
+    assert sanitize_filename(".git") == "git"
+    # Separators are replaced with underscores first, so a dotted path
+    # collapses to a single flat name with no traversal component surviving.
+    assert sanitize_filename(".../.../secret") == "_..._secret"
+    assert not sanitize_filename("...").startswith(".")
+    assert sanitize_filename("....") == "untitled"
+
+
 async def test_one_failing_collection_does_not_cancel_the_others(tmp_path, capsys):
     import asyncio
 

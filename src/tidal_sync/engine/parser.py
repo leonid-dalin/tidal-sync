@@ -52,7 +52,7 @@ def sanitize_filename(name: str) -> str:
     # as a traversal component once the slashes around it are gone.
     pattern = r"[\\<>:/|?*\x00-\x1f]"
     cleaned = re.sub(pattern, "_", name).strip()
-    cleaned = re.sub(r"\^\.+|\.+$", "", cleaned)
+    cleaned = re.sub(r"^\.+|\.+$", "", cleaned)
     if not cleaned:
         return "untitled"
 
@@ -231,7 +231,8 @@ def parse_csv[T: BaseModel](file_path: Path, model_class: type[T]) -> list[T]:
     Attempts to decode the file using UTF-8-SIG to strip Windows artefacts.
     If that fails, it falls back to CP1252 and Latin-1. Rows that fail
     schema validation are dropped and logged, preventing broken metadata
-    from halting the entire synchronisation queue.
+    from halting the entire synchronisation queue. If zero rows validate,
+    it raises ValueError rather than returning an empty list.
 
     Args:
         file_path (Path): The absolute or relative path to the CSV file.

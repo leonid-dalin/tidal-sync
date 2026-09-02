@@ -56,6 +56,12 @@ class FakeBlockSession:
         self._fail_status = fail_status
         self.blocked = set(blocked) if blocked else set()
         self._silent_noop = silent_noop or set()
+        # Blocklist read controls for the reconciliation tests: an explicit
+        # `blocklist` (list of string ids) is what the GET returns; when
+        # `blocklist_raises` is set, the read raises it instead. Both default
+        # to "follow the writes", which is the happy path.
+        self.blocklist: list[str] | None = None
+        self.blocklist_raises: BaseException | None = None
 
     @property
     def user(self):
@@ -99,6 +105,10 @@ class FakeBlockSession:
                 return _FakeResponse(True)
 
             def map_request(self, endpoint, params=None, parse=None):
+                if session.blocklist_raises is not None:
+                    raise session.blocklist_raises
+                if session.blocklist is not None:
+                    return [session.parse_artist({"id": i}) for i in session.blocklist]
                 return [session.parse_artist({"id": item}) for item in sorted(session.blocked)]
 
         return _Req()
@@ -392,21 +402,22 @@ async def test_fetch_blocked_artist_ids_returns_string_ids():
 
     fake = _FetchSession()
 
-    # fetch_blocked_artists lives in network.py; the engine imports it and
-    # passes the session as its only argument. The fake function ignores the
-    # session, but the engine still has to feed it through execute_network.
+    # fetch_blocked_artist_ids is a strict caller over fetch_blocked_artists_strict
+    # in network.py; the engine imports it and passes the session as its only
+    # argument. The fake function ignores the session, but the engine still has
+    # to feed it through execute_network.
     def fake_fetch(session):
         fake.calls += 1
         return [_BlockedArtist(29002266), _BlockedArtist(4894212)]
 
     import tidal_sync.engine.curation as cur_module
 
-    original = cur_module.fetch_blocked_artists
-    cur_module.fetch_blocked_artists = fake_fetch  # type: ignore[assignment]
+    original = cur_module.fetch_blocked_artists_strict
+    cur_module.fetch_blocked_artists_strict = fake_fetch  # type: ignore[assignment]
     try:
         ids = await cur_module.fetch_blocked_artist_ids(fake)  # type: ignore[arg-type]
     finally:
-        cur_module.fetch_blocked_artists = original
+        cur_module.fetch_blocked_artists_strict = original
 
     # Order preserved, ints stringified, no set() collapse.
     assert ids == ["29002266", "4894212"]
@@ -527,3 +538,29 @@ async def test_an_id_still_in_the_blocklist_lands_in_rejected_for_unblock():
 
     assert outcome.rejected == ["1", "2"]
     assert outcome.applied == []
+
+
+async def test_a_failed_confirmation_read_does_not_confirm_an_unblock():
+    """The reconciliation exists because a 2xx cannot be trusted. An empty read
+    that failed is not evidence of removal, and must not be reported as one.
+    """
+    session = FakeBlockSession()
+    session.blocklist_raises = RuntimeError("blocklist read failed")
+
+    outcome = await curation.unblock_artists(session, ["7", "8"])
+
+    assert outcome.applied == [], "an unverifiable write is not a success"
+    assert outcome.rejected == ["7", "8"]
+
+
+async def test_a_genuinely_empty_blocklist_still_confirms_an_unblock():
+    """Distinguishing failure from emptiness is the whole point: an empty
+    blocklist after unblocking two ids is exactly the expected outcome.
+    """
+    session = FakeBlockSession()
+    session.blocklist = []
+
+    outcome = await curation.unblock_artists(session, ["7", "8"])
+
+    assert outcome.applied == ["7", "8"]
+    assert outcome.rejected == []

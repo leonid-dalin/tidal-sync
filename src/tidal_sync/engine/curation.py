@@ -36,7 +36,7 @@ from loguru import logger
 from ..domain.exceptions import TidalPoisonError, TidalTransientError
 from ..domain.protocols import TidalUser
 from ..domain.results import UploadOutcome
-from .network import execute_network, fetch_blocked_artists
+from .network import execute_network, fetch_blocked_artists_strict
 from .workers import run_headless_tasks_async
 
 _BLOCK_METHOD = Literal["POST", "DELETE"]
@@ -159,7 +159,7 @@ async def block_artists(session: tidalapi.Session, ids: list[str]) -> UploadOutc
     rejected.
     """
     outcome = await _apply_per_id(ids, _block_write_action(session, "POST", False), "Block artist")
-    return await _reconcile_block_write(session, outcome, expected_present=True)
+    return await _reconcile_block_write(session, outcome, ids, expected_present=True)
 
 
 async def unblock_artists(session: tidalapi.Session, ids: list[str]) -> UploadOutcome:
@@ -175,11 +175,11 @@ async def unblock_artists(session: tidalapi.Session, ids: list[str]) -> UploadOu
     outcome = await _apply_per_id(
         ids, _block_write_action(session, "DELETE", True), "Unblock artist"
     )
-    return await _reconcile_block_write(session, outcome, expected_present=False)
+    return await _reconcile_block_write(session, outcome, ids, expected_present=False)
 
 
 async def _reconcile_block_write(
-    session: tidalapi.Session, outcome: UploadOutcome, *, expected_present: bool
+    session: tidalapi.Session, outcome: UploadOutcome, ids: list[str], *, expected_present: bool
 ) -> UploadOutcome:
     """Reconciles a block or unblock run against the post-write blocklist.
 
@@ -193,7 +193,21 @@ async def _reconcile_block_write(
     if not outcome.applied:
         return outcome
 
-    present = set(await fetch_blocked_artist_ids(session))
+    try:
+        present = set(await fetch_blocked_artist_ids(session))
+    except Exception as e:
+        # The reconciliation's read path owns this invariant: an unverifiable
+        # write is not a success. Reporting these ids as applied would be a
+        # guess; reporting them rejected is the honest answer and re-running
+        # block or unblock is idempotent. Walk the original input ids so the
+        # merged rejected bucket keeps its input-order contract.
+        logger.bind(audit=True).error("Blocklist confirmation read failed", error=repr(e))
+        rejected_set = set(outcome.rejected)
+        return UploadOutcome(
+            applied=[],
+            rejected=[i for i in ids if i in set(outcome.applied) or i in rejected_set],
+        )
+
     newly_rejected: list[str] = []
     confirmed_applied: list[str] = []
     for item_id in outcome.applied:
@@ -203,18 +217,25 @@ async def _reconcile_block_write(
         else:
             confirmed_applied.append(item_id)
 
+    # Walk the input ids again so the rejected bucket keeps input order:
+    # previously-rejected ids come first (their write never reached the
+    # reconciliation), then any applied id that the read found misaligned.
+    rejected_set = set(newly_rejected)
     return UploadOutcome(
         applied=confirmed_applied,
-        rejected=[*outcome.rejected, *newly_rejected],
+        rejected=[i for i in ids if i in set(outcome.rejected) or i in rejected_set],
     )
 
 
 async def fetch_blocked_artist_ids(session: tidalapi.Session) -> list[str]:
     """Lists the user's blocked artists as a flat list of string ids.
 
-    Thin caller over `fetch_blocked_artists`; the pagination and error
-    swallowing stay in network.py. Order matches the network order so the
-    caller can correlate positions across runs.
+    Strict caller over `fetch_blocked_artists_strict`; a failed page fetch
+    propagates rather than being swallowed. The reconciliation in
+    `_reconcile_block_write` owns this invariant: a missing blocklist after
+    a block or unblock write must not be reported as "confirmed removed".
+    Order matches the network order so the caller can correlate positions
+    across runs.
     """
-    artists = await execute_network(fetch_blocked_artists, session)
+    artists = await execute_network(fetch_blocked_artists_strict, session)
     return [str(a.id) for a in artists]

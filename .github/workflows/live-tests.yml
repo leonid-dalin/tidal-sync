@@ -14,9 +14,9 @@ on:
   workflow_dispatch:
     inputs:
       account_profile:
-        description: Tidal account profile written to ~/.tidal_sync
+        description: Tidal profile name to materialise under ~/.tidal_sync
         type: string
-        default: ci_throwaway
+        default: test_acc
       run_writes:
         description: Run write-marked tests in addition to read-only tests
         type: boolean

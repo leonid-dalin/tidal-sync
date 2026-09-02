@@ -47,6 +47,24 @@ def _session_with_mixes(mixes_value: list[Any]) -> Any:
     return _Session(mixes_value)
 
 
+class _FakeStation:
+    """Minimal stand-in for a tidalapi Mix/Radio station.
+
+    Exposes ``title``/``name``/``id`` so the exporter's station-name probe
+    succeeds and a ``tracks`` callable so the per-station fetch branch picks
+    it up.
+    """
+
+    def __init__(self, label: str, tracks: list[Any]) -> None:
+        self.name = label
+        self.title = label
+        self.id = label
+        self._tracks = tracks
+
+    def tracks(self, **_kwargs: Any) -> list[Any]:
+        return self._tracks
+
+
 async def test_session_mixes_is_fetched_through_execute_network(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -82,16 +100,6 @@ async def test_session_mixes_result_flows_into_all_stations(
 
     written: list[str] = []
 
-    class _FakeStation:
-        def __init__(self, label: str, tracks: list[Any]) -> None:
-            self.name = label
-            self.title = label
-            self.id = label
-            self._tracks = tracks
-
-        def tracks(self, **_kwargs: Any) -> list[Any]:
-            return self._tracks
-
     async def fake_execute_network(func: Any, *args: Any, **kwargs: Any) -> Any:
         return func(*args, **kwargs)
 
@@ -119,3 +127,51 @@ async def test_session_mixes_result_flows_into_all_stations(
     assert written == ["mix-a", "mix-b"], (
         "every station returned by execute_network must be serialised exactly once"
     )
+
+
+async def test_favourites_mixes_and_radios_are_both_fetched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Both favourites branches must round-trip through the serialiser.
+
+    The ``user.favorites.mixes`` and ``user.favorites.radios`` paths each hand
+    their method to ``execute_network`` and the returned list reaches
+    ``fetch_and_serialise_tracks``. This pins both branches after the dead
+    ``callable()`` guards were dropped so a future refactor cannot bypass
+    one of them.
+    """
+
+    serialised = []
+
+    class _Favorites:
+        def mixes(self) -> list[Any]:
+            return [_FakeStation(label="fav-mix", tracks=["t1"])]
+
+        def radios(self) -> list[Any]:
+            return [_FakeStation(label="fav-radio", tracks=["t2"])]
+
+    class _User:
+        favorites = _Favorites()
+
+    class _Session:
+        user = _User()
+
+    async def fake_execute_network(func: Any, *args: Any, **kwargs: Any) -> Any:
+        return func(*args, **kwargs)
+
+    async def fake_fetch_and_serialise_tracks(
+        name: str,
+        target_dir: Any,
+        fetch_items_coro: Any,
+        log_type: str,
+        allocator: Any,
+    ) -> int:
+        serialised.append(name)
+        return 0
+
+    monkeypatch.setattr(exporter, "execute_network", fake_execute_network)
+    monkeypatch.setattr(exporter, "fetch_and_serialise_tracks", fake_fetch_and_serialise_tracks)
+
+    await exporter.export_algorithmic_mixes_to_disk(_Session(), tmp_path)
+
+    assert sorted(serialised) == ["fav-mix", "fav-radio"]

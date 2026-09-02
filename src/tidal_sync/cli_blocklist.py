@@ -33,7 +33,6 @@ from typing import Annotated
 
 import typer
 
-from .cli import _BLOCK_RAIL_THRESHOLD, console, get_session
 from .cli_prompts import prompt_unblock
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
 from .engine.curation import block_artists, unblock_artists
@@ -71,6 +70,8 @@ def _now_iso() -> str:
 
 
 def _format_table(rows: list[Subscription]) -> None:
+    from .cli import console
+
     if not rows:
         console.print("[yellow]No subscriptions.[/yellow]")
         return
@@ -89,12 +90,10 @@ def _format_table(rows: list[Subscription]) -> None:
 
 @blocklist_app.command(name="add")
 def add(
-    name: Annotated[str, typer.Argument(help="Subscription name (letters, digits, '_', '-', '.')")],
-    source: Annotated[
-        str, typer.Argument(help="HTTPS URL or local path to a filter list")
-    ],
+    name: Annotated[str, typer.Argument(help="Subscription name")],
+    source: Annotated[str, typer.Argument(help="HTTPS URL or local path")],
     profile: Annotated[
-        str, typer.Option("--profile", "-p", help="Profile name (unused for add, accepted for parity)")
+        str, typer.Option("--profile", "-p", help="Profile name (accepted for parity)")
     ] = "default",
 ) -> None:
     """Subscribe to a filter list, validating the format before persisting.
@@ -102,6 +101,8 @@ def add(
     The fetch here is throwaway: the goal is to reject an unsupported
     extension at add time so a bad subscription never reaches apply.
     """
+    from .cli import console
+
     try:
         fmt = _detect_format(source)
         if fmt not in _SUPPORTED_FORMATS:
@@ -130,10 +131,12 @@ def add(
 def remove(
     name: Annotated[str, typer.Argument(help="Subscription name to remove")],
     profile: Annotated[
-        str, typer.Option("--profile", "-p", help="Profile name (unused for remove, accepted for parity)")
+        str, typer.Option("--profile", "-p", help="Profile name (accepted for parity)")
     ] = "default",
 ) -> None:
     """Drop a subscription by name."""
+    from .cli import console
+
     if not remove_subscription(name):
         console.print(f"[bold red]No such subscription:[/bold red] {name}")
         raise typer.Exit(1)
@@ -144,13 +147,15 @@ def remove(
 def update(
     name: Annotated[
         str | None,
-        typer.Argument(help="Subscription name to update, or omit for every subscription"),
+        typer.Argument(help="Name to update, or omit for every subscription"),
     ] = None,
     profile: Annotated[
-        str, typer.Option("--profile", "-p", help="Profile name (unused for update, accepted for parity)")
+        str, typer.Option("--profile", "-p", help="Profile name (accepted for parity)")
     ] = "default",
 ) -> None:
     """Refetch one or every subscription and record per-subscription errors."""
+    from .cli import console
+
     subs = load_subscriptions()
     if name is not None:
         subs = [s for s in subs if s.name]
@@ -186,7 +191,7 @@ def update(
 @blocklist_app.command(name="show")
 def show(
     profile: Annotated[
-        str, typer.Option("--profile", "-p", help="Profile name (unused for show, accepted for parity)")
+        str, typer.Option("--profile", "-p", help="Profile name (accepted for parity)")
     ] = "default",
 ) -> None:
     """Print every subscription with its source, format and last fetch state."""
@@ -219,6 +224,10 @@ def apply(
     The engine decides what the sets are and what prune means; this
     module only forwards flags and prints the result.
     """
+    # Lazy imports to avoid the circular dependency with cli.py, which
+    # imports this module to register the sub-app.
+    from .cli import _BLOCK_RAIL_THRESHOLD, console, get_session
+
     subs = load_subscriptions()
     if not subs:
         console.print("[yellow]No subscriptions. Use 'tidal-sync blocklist add' first.[/yellow]")

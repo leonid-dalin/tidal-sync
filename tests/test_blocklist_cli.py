@@ -19,9 +19,10 @@ import pytest
 from typer.testing import CliRunner
 
 from tidal_sync import cli as cli_module
+from tidal_sync import cli_blocklist
 from tidal_sync.cli import app
-from tidal_sync.cli_blocklist import blocklist_app
 from tidal_sync.domain.results import UploadOutcome
+from tidal_sync.engine.filterlist import FormatError
 from tidal_sync.engine.filterlist_apply import ApplyPlan
 from tidal_sync.engine.filterlist_store import Subscription
 
@@ -74,18 +75,17 @@ def test_blocklist_subcommand_accepts_profile_flag_long(
     def _noop_fetch(source: str, fmt: str, dest: Path) -> int:
         return 0
 
-    monkeypatch.setattr(cli_module, "fetch_source", _noop_fetch)
-    monkeypatch.setattr(cli_module, "load_subscriptions", lambda: [])
-    monkeypatch.setattr(cli_module, "add_subscription", lambda sub: None)
-    monkeypatch.setattr(cli_module, "save_subscriptions", lambda subs: None)
-    monkeypatch.setattr(cli_module, "remove_subscription", lambda name: True)
-    monkeypatch.setattr(cli_module, "cache_path", lambda name, fmt: Path("/tmp/fake"))
+    monkeypatch.setattr(cli_blocklist, "fetch_source", _noop_fetch)
+    monkeypatch.setattr(cli_blocklist, "load_subscriptions", lambda: [])
+    monkeypatch.setattr(cli_blocklist, "add_subscription", lambda sub: None)
+    monkeypatch.setattr(cli_blocklist, "remove_subscription", lambda name: True)
+    monkeypatch.setattr(cli_blocklist, "cache_path", lambda name, fmt: Path("/tmp/fake"))
 
     async def _plan_apply(session: object, subs: list[Subscription], **_: object) -> ApplyPlan:
         return ApplyPlan(to_block=[], already_blocked=[], unlisted=[], errors=[])
 
-    monkeypatch.setattr(cli_module, "plan_apply", _plan_apply)
-    monkeypatch.setattr(cli_module, "prompt_unblock", lambda candidates, *, force: [])
+    monkeypatch.setattr(cli_blocklist, "plan_apply", _plan_apply)
+    monkeypatch.setattr(cli_blocklist, "prompt_unblock", lambda candidates, *, force: [])
 
     args: list[str] = ["blocklist", subcommand, "--profile", "second"]
     if subcommand == "add":
@@ -111,18 +111,17 @@ def test_blocklist_subcommand_accepts_profile_flag_short(
     def _noop_fetch(source: str, fmt: str, dest: Path) -> int:
         return 0
 
-    monkeypatch.setattr(cli_module, "fetch_source", _noop_fetch)
-    monkeypatch.setattr(cli_module, "load_subscriptions", lambda: [])
-    monkeypatch.setattr(cli_module, "add_subscription", lambda sub: None)
-    monkeypatch.setattr(cli_module, "save_subscriptions", lambda subs: None)
-    monkeypatch.setattr(cli_module, "remove_subscription", lambda name: True)
-    monkeypatch.setattr(cli_module, "cache_path", lambda name, fmt: Path("/tmp/fake"))
+    monkeypatch.setattr(cli_blocklist, "fetch_source", _noop_fetch)
+    monkeypatch.setattr(cli_blocklist, "load_subscriptions", lambda: [])
+    monkeypatch.setattr(cli_blocklist, "add_subscription", lambda sub: None)
+    monkeypatch.setattr(cli_blocklist, "remove_subscription", lambda name: True)
+    monkeypatch.setattr(cli_blocklist, "cache_path", lambda name, fmt: Path("/tmp/fake"))
 
     async def _plan_apply(session: object, subs: list[Subscription], **_: object) -> ApplyPlan:
         return ApplyPlan(to_block=[], already_blocked=[], unlisted=[], errors=[])
 
-    monkeypatch.setattr(cli_module, "plan_apply", _plan_apply)
-    monkeypatch.setattr(cli_module, "prompt_unblock", lambda candidates, *, force: [])
+    monkeypatch.setattr(cli_blocklist, "plan_apply", _plan_apply)
+    monkeypatch.setattr(cli_blocklist, "prompt_unblock", lambda candidates, *, force: [])
 
     args: list[str] = ["blocklist", subcommand, "-p", "second"]
     if subcommand == "add":
@@ -140,6 +139,7 @@ def test_blocklist_subcommand_accepts_profile_flag_short(
 def test_blocklist_apply_exits_one_when_to_block_has_rejections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(cli_blocklist, "load_subscriptions", lambda: [_fake_subscription()])
     monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
 
     async def _plan_apply(session: object, subs: list[Subscription], **_: object) -> ApplyPlan:
@@ -150,13 +150,13 @@ def test_blocklist_apply_exits_one_when_to_block_has_rejections(
             errors=[],
         )
 
-    monkeypatch.setattr(cli_module, "plan_apply", _plan_apply)
-    monkeypatch.setattr(cli_module, "prompt_unblock", lambda candidates, *, force: [])
+    monkeypatch.setattr(cli_blocklist, "plan_apply", _plan_apply)
+    monkeypatch.setattr(cli_blocklist, "prompt_unblock", lambda candidates, *, force: [])
 
     async def _block_artists(session: object, ids: list[str]) -> UploadOutcome:
         return UploadOutcome(applied=[ids[0]], rejected=[ids[1]])
 
-    monkeypatch.setattr(cli_module.curation, "block_artists", _block_artists)
+    monkeypatch.setattr(cli_blocklist, "block_artists", _block_artists)
 
     result = runner.invoke(app, ["blocklist", "apply", "--force"])
 
@@ -170,6 +170,7 @@ def test_blocklist_apply_dry_run_makes_no_writes(
 ) -> None:
     block_calls: list[list[str]] = []
 
+    monkeypatch.setattr(cli_blocklist, "load_subscriptions", lambda: [_fake_subscription()])
     monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
 
     async def _plan_apply(session: object, subs: list[Subscription], **_: object) -> ApplyPlan:
@@ -180,8 +181,8 @@ def test_blocklist_apply_dry_run_makes_no_writes(
             errors=[],
         )
 
-    monkeypatch.setattr(cli_module, "plan_apply", _plan_apply)
-    monkeypatch.setattr(cli_module, "prompt_unblock", lambda candidates, *, force: [])
+    monkeypatch.setattr(cli_blocklist, "plan_apply", _plan_apply)
+    monkeypatch.setattr(cli_blocklist, "prompt_unblock", lambda candidates, *, force: [])
 
     async def _block_artists(session: object, ids: list[str]) -> UploadOutcome:
         block_calls.append(list(ids))
@@ -190,8 +191,8 @@ def test_blocklist_apply_dry_run_makes_no_writes(
     async def _unblock_artists(session: object, ids: list[str]) -> UploadOutcome:
         return UploadOutcome(applied=list(ids), rejected=[])
 
-    monkeypatch.setattr(cli_module.curation, "block_artists", _block_artists)
-    monkeypatch.setattr(cli_module.curation, "unblock_artists", _unblock_artists)
+    monkeypatch.setattr(cli_blocklist, "block_artists", _block_artists)
+    monkeypatch.setattr(cli_blocklist, "unblock_artists", _unblock_artists)
 
     result = runner.invoke(app, ["blocklist", "apply", "--dry-run", "--prune", "--force"])
 
@@ -206,6 +207,7 @@ def test_blocklist_apply_force_skips_unblock_prompt(
     unblock_calls: list[list[str]] = []
     prompt_calls: list[list[tuple[str, str]]] = []
 
+    monkeypatch.setattr(cli_blocklist, "load_subscriptions", lambda: [_fake_subscription()])
     monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
 
     async def _plan_apply(session: object, subs: list[Subscription], **_: object) -> ApplyPlan:
@@ -216,13 +218,13 @@ def test_blocklist_apply_force_skips_unblock_prompt(
             errors=[],
         )
 
-    monkeypatch.setattr(cli_module, "plan_apply", _plan_apply)
+    monkeypatch.setattr(cli_blocklist, "plan_apply", _plan_apply)
 
     def _prompt_unblock(candidates: list[tuple[str, str]], *, force: bool) -> list[str]:
         prompt_calls.append(list(candidates))
         return []
 
-    monkeypatch.setattr(cli_module, "prompt_unblock", _prompt_unblock)
+    monkeypatch.setattr(cli_blocklist, "prompt_unblock", _prompt_unblock)
 
     async def _block_artists(session: object, ids: list[str]) -> UploadOutcome:
         return UploadOutcome(applied=list(ids), rejected=[])
@@ -231,8 +233,8 @@ def test_blocklist_apply_force_skips_unblock_prompt(
         unblock_calls.append(list(ids))
         return UploadOutcome(applied=list(ids), rejected=[])
 
-    monkeypatch.setattr(cli_module.curation, "block_artists", _block_artists)
-    monkeypatch.setattr(cli_module.curation, "unblock_artists", _unblock_artists)
+    monkeypatch.setattr(cli_blocklist, "block_artists", _block_artists)
+    monkeypatch.setattr(cli_blocklist, "unblock_artists", _unblock_artists)
 
     # 998 + 997 are well below the ten-id rail, so the rail is irrelevant;
     # what we pin is that prompt_unblock sees force=True and returns [].
@@ -251,10 +253,10 @@ def test_blocklist_add_rejects_unsupported_extension_at_add_time(
     add_calls: list[Subscription] = []
 
     def _fetch(source: str, fmt: str, dest: Path) -> int:
-        raise cli_module.FormatError(f"unsupported filter-list format: {fmt!r}")
+        raise FormatError(f"unsupported filter-list format: {fmt!r}")
 
-    monkeypatch.setattr(cli_module, "fetch_source", _fetch)
-    monkeypatch.setattr(cli_module, "add_subscription", lambda sub: add_calls.append(sub))
+    monkeypatch.setattr(cli_blocklist, "fetch_source", _fetch)
+    monkeypatch.setattr(cli_blocklist, "add_subscription", lambda sub: add_calls.append(sub))
 
     result = runner.invoke(
         app,
@@ -274,7 +276,7 @@ def test_blocklist_add_rejects_unsupported_extension_at_add_time(
 def test_blocklist_remove_unknown_name_exits_non_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cli_module, "remove_subscription", lambda name: False)
+    monkeypatch.setattr(cli_blocklist, "remove_subscription", lambda name: False)
 
     result = runner.invoke(app, ["blocklist", "remove", "ghost"])
 

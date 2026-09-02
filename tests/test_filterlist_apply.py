@@ -13,9 +13,17 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from tidal_sync.engine import filterlist_apply
+from tidal_sync.engine import filterlist_apply, filterlist_store
 from tidal_sync.engine.filterlist_apply import MAX_APPLY_IDS, ApplyPlan, plan_apply
 from tidal_sync.engine.filterlist_store import Subscription
+
+
+@pytest.fixture(autouse=True)
+def store_dir(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """Point STORE_DIR at a fresh per-test directory so the real user cache is never touched."""
+    target = tmp_path / "filter_lists"
+    monkeypatch.setattr(filterlist_store, "STORE_DIR", target)
+    return target
 
 
 def _fresh_iso(now: datetime, hours_ago: int = 1) -> str:
@@ -58,9 +66,18 @@ def now() -> datetime:
 # ---------------------------------------------------------------------------
 
 
-async def test_dry_run_makes_no_writes(monkeypatch: pytest.MonkeyPatch, now: datetime):
+async def test_dry_run_makes_no_writes(monkeypatch: pytest.MonkeyPatch, now: datetime, store_dir):
     subs = [_sub("a", last_fetched=_fresh_iso(now, hours_ago=1))]
     parse = {"a": [("1", "alpha"), ("2", "beta")]}
+
+    # Pin the engine's clock to the test fixture so the timestamp
+    # above is actually fresh.
+    monkeypatch.setattr(filterlist_apply, "_now_iso", lambda: now.isoformat())
+
+    # Pre-populate the cache as if a previous fetch wrote it.
+    cached = store_dir / "cache"
+    cached.mkdir(parents=True, exist_ok=True)
+    (cached / "a.txt").write_bytes(b"SUB::a")
 
     class _R:
         def __init__(self) -> None:
@@ -78,7 +95,7 @@ async def test_dry_run_makes_no_writes(monkeypatch: pytest.MonkeyPatch, now: dat
 
     fetch_calls: dict[str, int] = {}
 
-    async def _fetch(source, fmt, dest):
+    def _fetch(source, fmt, dest):
         fetch_calls[dest.stem] = 1
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(f"SUB::{dest.stem}".encode())
@@ -127,7 +144,7 @@ async def test_fetch_error_recorded_but_sibling_continues(
 
     fetch_calls: dict[str, int] = {}
 
-    async def _fetch(source, fmt, dest):
+    def _fetch(source, fmt, dest):
         name = dest.stem
         if name == "bad":
             raise FetchError("boom")
@@ -178,7 +195,7 @@ async def test_same_id_in_two_lists_appears_once(monkeypatch: pytest.MonkeyPatch
 
     r_block = _R()
 
-    async def _fetch(source, fmt, dest):
+    def _fetch(source, fmt, dest):
         name = dest.stem
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(f"SUB::{name}".encode())
@@ -209,7 +226,9 @@ async def test_same_id_in_two_lists_appears_once(monkeypatch: pytest.MonkeyPatch
     assert r_block.calls == [["1", "2", "3"]]
 
 
-async def test_stale_refetched_fresh_skipped(monkeypatch: pytest.MonkeyPatch, now: datetime):
+async def test_stale_refetched_fresh_skipped(
+    monkeypatch: pytest.MonkeyPatch, now: datetime, tmp_path
+):
     fresh_ts = _fresh_iso(now, hours_ago=1)
     stale_ts = _stale_iso(now, hours_ago=99)
     subs = [
@@ -218,6 +237,14 @@ async def test_stale_refetched_fresh_skipped(monkeypatch: pytest.MonkeyPatch, no
         _sub("never"),
     ]
     parse = {"fresh": [], "stale": [("5", "five")], "never": [("7", "seven")]}
+
+    monkeypatch.setattr(filterlist_apply, "_now_iso", lambda: now.isoformat())
+
+    # Pre-populate the cache for the fresh list. In production this
+    # file was written by an earlier fetch that set last_fetched.
+    cached = tmp_path / "filter_lists" / "cache"
+    cached.mkdir(parents=True, exist_ok=True)
+    (cached / "fresh.txt").write_bytes(b"SUB::fresh")
 
     class _R:
         def __init__(self) -> None:
@@ -231,7 +258,7 @@ async def test_stale_refetched_fresh_skipped(monkeypatch: pytest.MonkeyPatch, no
 
     fetch_calls: dict[str, int] = {}
 
-    async def _fetch(source, fmt, dest):
+    def _fetch(source, fmt, dest):
         name = dest.stem
         fetch_calls[name] = fetch_calls.get(name, 0) + 1
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -276,7 +303,7 @@ async def test_already_blocked_separated(monkeypatch: pytest.MonkeyPatch, now: d
 
     r_block = _R()
 
-    async def _fetch(source, fmt, dest):
+    def _fetch(source, fmt, dest):
         name = dest.stem
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(f"SUB::{name}".encode())
@@ -319,7 +346,7 @@ async def test_unlisted_computed(monkeypatch: pytest.MonkeyPatch, now: datetime)
 
     r_unblock = _R()
 
-    async def _fetch(source, fmt, dest):
+    def _fetch(source, fmt, dest):
         name = dest.stem
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(f"SUB::{name}".encode())
@@ -360,7 +387,7 @@ async def test_prune_true_calls_unblock(monkeypatch: pytest.MonkeyPatch, now: da
 
     r_unblock = _R()
 
-    async def _fetch(source, fmt, dest):
+    def _fetch(source, fmt, dest):
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(b"SUB::a")
         return 1
@@ -392,7 +419,7 @@ async def test_prune_false_skips_unblock(monkeypatch: pytest.MonkeyPatch, now: d
 
     r_unblock = _R()
 
-    async def _fetch(source, fmt, dest):
+    def _fetch(source, fmt, dest):
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(b"SUB::a")
         return 1
@@ -428,7 +455,7 @@ async def test_max_apply_ids_aborts_without_writing(monkeypatch: pytest.MonkeyPa
     r_block = _R()
     r_unblock = _R()
 
-    async def _fetch(source, fmt, dest):
+    def _fetch(source, fmt, dest):
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(b"SUB::a")
         return len(parse["a"])

@@ -33,8 +33,7 @@ def gate():
 
     GLOBAL_GATE is a module-level singleton: a test that triggers the 1800s
     abuse lock would otherwise leave every later test in the process sleeping
-    at its pre-flight check. Three test modules each grew their own swap
-    idiom; this is the one of them.
+    at its pre-flight check.
     """
     from tidal_sync.engine import network
 

@@ -22,8 +22,9 @@ from tidal_sync import cli as cli_module
 from tidal_sync import cli_blocklist
 from tidal_sync.cli import app
 from tidal_sync.domain.results import UploadOutcome
-from tidal_sync.engine.filterlist import FormatError
+from tidal_sync.engine.filterlist import FormatError, parse_filter_list
 from tidal_sync.engine.filterlist_apply import ApplyPlan
+from tidal_sync.engine.filterlist_fetch import FetchError
 from tidal_sync.engine.filterlist_store import Subscription
 
 runner = CliRunner()
@@ -290,3 +291,224 @@ def test_top_level_help_still_shows_original_five_commands() -> None:
     assert result.exit_code == 0, result.output
     for original in ("login", "logout", "like", "unlike", "clear"):
         assert original in result.output, f"{original} missing from top-level --help"
+
+
+# ---------------------------------------------------------------------------
+# Tests for the add-command recording defect.
+#
+# Background: the parent found by running the CLI for real that
+# ``blocklist add`` validates the source extension but never records
+# what it read. ``show`` therefore prints ``last_count=0`` and
+# ``last_fetched=never``, and the cache directory is never populated,
+# even though ``update`` already records both correctly.
+#
+# These tests pin the fix at the CLI layer with the store directory
+# redirected at ``tmp_path`` so no test touches the real
+# ``~/.tidal_sync``.
+# ---------------------------------------------------------------------------
+
+
+def _write_local_list(tmp_path: Path, name: str, ids: list[str]) -> Path:
+    """Drop a real txt file with three ids under tmp_path and return it."""
+    body = "\n".join(ids).encode("utf-8") + b"\n"
+    path = tmp_path / name
+    path.write_bytes(body)
+    return path
+
+
+def _stub_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[Path]:
+    """Patch ``fetch_source`` to copy the source to ``dest`` and parse it.
+
+    The stub honours the contract of the real fetcher: it writes the
+    bytes the fix expects to land in the cache and returns the id
+    count. This is what the real ``fetch_source`` does for a local file
+    and keeps the tests honest about what the fix needs to pass.
+    """
+    called: list[Path] = []
+
+    def _fetch(source: str, fmt: str, dest: Path) -> int:
+        called.append(dest)
+        data = Path(source).read_bytes()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        return len(parse_filter_list(data, fmt))
+
+    monkeypatch.setattr(cli_blocklist, "fetch_source", _fetch)
+    return called
+
+
+# Test 9: after add, last_count on the persisted subscription equals the
+# number of ids the source contained. This is the symptom the parent
+# found: ``blocklist show`` printed ``last_count=0`` after a successful add.
+def test_blocklist_add_records_last_count_from_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = ["4894212", "8107285", "1234567"]
+    src = _write_local_list(tmp_path, "kpop.txt", ids)
+    _stub_fetch(monkeypatch)
+    monkeypatch.setattr(
+        cli_blocklist, "cache_path", lambda name, fmt: tmp_path / "cache" / f"{name}.{fmt}"
+    )
+
+    persisted: list[Subscription] = []
+    monkeypatch.setattr(cli_blocklist, "add_subscription", lambda sub: persisted.append(sub))
+
+    result = runner.invoke(app, ["blocklist", "add", "kpop", str(src)])
+
+    assert result.exit_code == 0, result.output
+    assert len(persisted) == 1
+    assert persisted[0].name == "kpop"
+    assert persisted[0].last_count == len(ids)
+
+
+# Test 10: after add, last_fetched is populated. The parent found the
+# symptom in ``show`` as ``last_fetched=never`` immediately after add.
+def test_blocklist_add_records_last_fetched_timestamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = ["4894212", "8107285", "1234567"]
+    src = _write_local_list(tmp_path, "kpop.txt", ids)
+    _stub_fetch(monkeypatch)
+    monkeypatch.setattr(
+        cli_blocklist, "cache_path", lambda name, fmt: tmp_path / "cache" / f"{name}.{fmt}"
+    )
+
+    persisted: list[Subscription] = []
+    monkeypatch.setattr(cli_blocklist, "add_subscription", lambda sub: persisted.append(sub))
+
+    result = runner.invoke(app, ["blocklist", "add", "kpop", str(src)])
+
+    assert result.exit_code == 0, result.output
+    assert len(persisted) == 1
+    assert persisted[0].last_fetched is not None
+    # A timestamp must round-trip through datetime.fromisoformat without error.
+    parsed = datetime.fromisoformat(persisted[0].last_fetched)
+    assert parsed.tzinfo is not None
+
+
+# Test 11: after add, the cache file exists under cache/ and parses back
+# to the same ids the source contained. The parent found that
+# ``~/.tidal_sync/filter_lists/cache/kpop.txt`` was missing after add.
+def test_blocklist_add_writes_cache_file_with_source_contents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = ["4894212", "8107285", "1234567"]
+    src = _write_local_list(tmp_path, "kpop.txt", ids)
+    _stub_fetch(monkeypatch)
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setattr(
+        cli_blocklist, "cache_path", lambda name, fmt: cache_dir / f"{name}.{fmt}"
+    )
+
+    persisted: list[Subscription] = []
+    monkeypatch.setattr(cli_blocklist, "add_subscription", lambda sub: persisted.append(sub))
+
+    result = runner.invoke(app, ["blocklist", "add", "kpop", str(src)])
+
+    assert result.exit_code == 0, result.output
+    cache_file = cache_dir / "kpop.txt"
+    assert cache_file.exists(), "add must populate the cache file"
+    parsed_ids = parse_filter_list(cache_file.read_bytes(), "txt")
+    assert parsed_ids == [(i, "") for i in ids]
+
+
+# Test 12: an unsupported extension is still rejected at add time and no
+# subscription is persisted. This pins the preserved-behaviour line from
+# the brief: ``add`` validates before subscribing.
+def test_blocklist_add_rejects_unsupported_extension_without_persisting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        cli_blocklist, "cache_path", lambda name, fmt: tmp_path / "cache" / f"{name}.{fmt}"
+    )
+
+    persisted: list[Subscription] = []
+    monkeypatch.setattr(cli_blocklist, "add_subscription", lambda sub: persisted.append(sub))
+
+    fetch_calls: list[tuple[str, str, Path]] = []
+
+    def _fetch(source: str, fmt: str, dest: Path) -> int:
+        fetch_calls.append((source, fmt, dest))
+        return 0
+
+    monkeypatch.setattr(cli_blocklist, "fetch_source", _fetch)
+
+    result = runner.invoke(app, ["blocklist", "add", "bad", "https://example.test/list.xyz"])
+
+    assert result.exit_code != 0, result.output
+    assert persisted == [], "add must not persist when the extension is unsupported"
+    assert fetch_calls == [], "fetch_source must not be called for an unsupported extension"
+
+
+# Test 13: a source that fails to fetch is still rejected at add time
+# and no subscription is persisted. This pins the second half of the
+# preserved-behaviour line.
+def test_blocklist_add_rejects_source_that_fails_to_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        cli_blocklist, "cache_path", lambda name, fmt: tmp_path / "cache" / f"{name}.{fmt}"
+    )
+
+    persisted: list[Subscription] = []
+    monkeypatch.setattr(cli_blocklist, "add_subscription", lambda sub: persisted.append(sub))
+
+    def _fetch(source: str, fmt: str, dest: Path) -> int:
+        raise FetchError(f"Fetch failed: HTTP 503")
+
+    monkeypatch.setattr(cli_blocklist, "fetch_source", _fetch)
+
+    result = runner.invoke(app, ["blocklist", "add", "kpop", "https://example.test/list.txt"])
+
+    assert result.exit_code != 0, result.output
+    assert persisted == [], "add must not persist when the fetch fails"
+
+
+# Test 14 (collateral): ``remove`` and ``show`` still read the same
+# fields ``add`` now writes. ``remove`` deletes by name and ``show``
+# formats last_count and last_fetched through ``_format_table``, so a
+# subscription written by the fixed ``add`` must round-trip through
+# load_subscriptions / remove_subscription without losing fields.
+def test_blocklist_remove_and_show_round_trip_after_fixed_add(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = ["4894212", "8107285", "1234567"]
+    src = _write_local_list(tmp_path, "kpop.txt", ids)
+    _stub_fetch(monkeypatch)
+    monkeypatch.setattr(
+        cli_blocklist, "cache_path", lambda name, fmt: tmp_path / "cache" / f"{name}.{fmt}"
+    )
+
+    persisted: list[Subscription] = []
+    monkeypatch.setattr(cli_blocklist, "add_subscription", lambda sub: persisted.append(sub))
+
+    add_result = runner.invoke(app, ["blocklist", "add", "kpop", str(src)])
+    assert add_result.exit_code == 0, add_result.output
+    assert len(persisted) == 1
+    written = persisted[0]
+    assert written.last_count == len(ids)
+    assert written.last_fetched is not None
+
+    # Now exercise show and remove with the recorded subscription loaded.
+    monkeypatch.setattr(cli_blocklist, "load_subscriptions", lambda: [written])
+
+    show_result = runner.invoke(app, ["blocklist", "show"])
+    assert show_result.exit_code == 0, show_result.output
+    assert "kpop" in show_result.output
+    assert f"last_count={len(ids)}" in show_result.output
+    assert "last_fetched=never" not in show_result.output
+
+    removed: list[str] = []
+
+    def _remove(name: str) -> bool:
+        removed.append(name)
+        return True
+
+    monkeypatch.setattr(cli_blocklist, "remove_subscription", _remove)
+
+    remove_result = runner.invoke(app, ["blocklist", "remove", "kpop"])
+    assert remove_result.exit_code == 0, remove_result.output
+    assert removed == ["kpop"]

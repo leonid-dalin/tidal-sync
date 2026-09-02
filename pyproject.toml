@@ -53,4 +53,4 @@ asyncio_default_fixture_loop_scope = "function"
 python_version = "3.12"
 ignore_missing_imports = true
 warn_unused_ignores = true
-enable_error_code = ["possibly-undefined"]
+enable_error_code = ["possibly-undefined", "redundant-expr"]

@@ -36,6 +36,7 @@ import typer
 from rich.console import Console
 
 from .auth import _get_all_profiles, get_session, secure_delete_token
+from .cli_blocklist import blocklist_app
 from .domain.enums import ClearTarget, FavoriteKind
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
 from .engine import curation
@@ -446,6 +447,8 @@ def list_profiles() -> None:
         console.print(f"  • [bold green]{profile_name}[/bold green] (User ID: {user_id})")
     console.print("")
 
+
+app.add_typer(blocklist_app, name="blocklist")
 
 if __name__ == "__main__":
     app()

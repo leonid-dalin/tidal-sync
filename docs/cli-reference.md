@@ -203,6 +203,156 @@ Note: the clear audit log is currently routed to the same `./import_reports` dir
 
 ---
 
+### `like`
+
+**Synopsis**
+```bash
+tidal-sync like <kind> <ids>... [--profile NAME] [-p NAME]
+```
+
+**Description**
+Likes one or more items on the named profile. The kind is a required argument taken from the `FavoriteKind` enum, so only the values below are accepted; anything else (including `playlist`) is rejected by Typer before any request goes out as a usage error.
+
+**Arguments**
+
+* `kind` (required): The kind of favourite to add. Must be one of the `FavoriteKind` enum values:
+  * `track` - liked tracks
+  * `artist` - followed artists
+  * `album` - saved albums
+* `ids` (required, one or more): One or more ids or Tidal share URLs. Bare numeric strings and Tidal share URLs (`/track/<id>`, `/artist/<id>`, `/album/<id>`) are accepted; anything unparseable is rejected before any request goes out.
+
+**Options**
+
+* `--profile`, `-p` NAME: Which account profile to like into. Default: `default`.
+
+**Examples**
+```bash
+# Like three tracks on the default account
+tidal-sync like track 20019287 19782830 19781477
+
+# Follow two artists on a named account
+tidal-sync like artist 4894212 8107285 -p target
+
+# Save three albums parsed from share URLs
+tidal-sync like album https://listen.tidal.com/album/20019282 https://tidal.com/album/19781468 19782820
+```
+
+**Reads and writes**
+Reads: the session token for the selected profile. Writes: nothing on disk; the named items appear as favourites on the Tidal account for the selected profile.
+
+---
+
+### `unlike`
+
+**Synopsis**
+```bash
+tidal-sync unlike <kind> <ids>... [--profile NAME] [-p NAME]
+```
+
+**Description**
+Removes one or more items from the favourites on the named profile. The kind is a required argument taken from the `FavoriteKind` enum, so only the values below are accepted; anything else is rejected by Typer before any request goes out as a usage error.
+
+**Arguments**
+
+* `kind` (required): The kind of favourite to remove. Must be one of the `FavoriteKind` enum values:
+  * `track` - liked tracks
+  * `artist` - followed artists
+  * `album` - saved albums
+* `ids` (required, one or more): One or more ids or Tidal share URLs. Bare numeric strings and Tidal share URLs are accepted; anything unparseable is rejected before any request goes out.
+
+**Options**
+
+* `--profile`, `-p` NAME: Which account profile to unlike from. Default: `default`.
+
+**Examples**
+```bash
+# Remove three tracks from the default account favourites
+tidal-sync unlike track 20019287 19782830 19781477
+
+# Unfollow one artist on a named account
+tidal-sync unlike artist 4894212 -p source
+
+# Remove one saved album parsed from a share URL
+tidal-sync unlike album https://tidal.com/album/20019282 -p target
+```
+
+**Reads and writes**
+Reads: the session token for the selected profile. Writes: nothing on disk; the named items disappear from the Tidal account favourites.
+
+---
+
+### `block`
+
+**Synopsis**
+```bash
+tidal-sync block <ids>... [--profile NAME] [-p NAME] [--force] [-f]
+```
+
+**Description**
+Blocks one or more artists on the named profile. Each id is sent on its own POST request, so the command reports exactly which artist failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/artist/<id>`); anything unparseable is rejected before any request goes out.
+
+The command is destructive at scale. When the resolved id list exceeds ten ids and `--force` is absent, the CLI prints one rich line per id then asks the operator to retype the profile name; a mismatched answer aborts before any request goes out. Ten is the threshold under which no prompt appears. Use `--force` in automation to skip the prompt.
+
+**Arguments**
+
+* `ids` (required, one or more): One or more artist ids or Tidal share URLs.
+
+**Options**
+
+* `--profile`, `-p` NAME: Which account profile to block on. Default: `default`.
+* `--force`, `-f`: Skip the confirmation prompt for batches above the ten-id rail. Default: `False`.
+
+**Examples**
+```bash
+# Block two artists on the default account
+tidal-sync block 4894212 8107285
+
+# Block an artist from a share URL on a named account
+tidal-sync block https://tidal.com/artist/4894212 -p target
+
+# Block a large batch without prompting
+tidal-sync block $(cat blocklist.txt) --force
+```
+
+**Reads and writes**
+Reads: the session token for the selected profile. Writes: nothing on disk; the named artists disappear from the Tidal account discoverable catalogue and appear in the account's block list.
+
+---
+
+### `unblock`
+
+**Synopsis**
+```bash
+tidal-sync unblock <ids>... [--profile NAME] [-p NAME]
+```
+
+**Description**
+Unblocks one or more artists on the named profile. Each id is sent on its own DELETE request, so the command reports exactly which artist failed if the run is not clean. The ids accept bare numeric strings and Tidal share URLs (`/artist/<id>`); anything unparseable is rejected before any request goes out.
+
+Unblock is restorative and has no safety rail. There is no `--force` because there is nothing to confirm past the standard one-line-per-id report.
+
+**Arguments**
+
+* `ids` (required, one or more): One or more artist ids or Tidal share URLs.
+
+**Options**
+
+* `--profile`, `-p` NAME: Which account profile to unblock on. Default: `default`.
+
+**Examples**
+```bash
+# Unblock two artists on the default account
+tidal-sync unblock 4894212 8107285
+
+# Unblock an artist from a share URL on a named account
+tidal-sync unblock https://tidal.com/artist/4894212 -p source
+```
+
+**Reads and writes**
+Reads: the session token for the selected profile. Writes: nothing on disk; the named artists are removed from the Tidal account block list.
+
+---
+
 ### `profiles`
 
 **Synopsis**

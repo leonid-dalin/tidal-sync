@@ -25,7 +25,6 @@ fallbacks, and orchestrates the upload queues.
 """
 
 import asyncio
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -37,6 +36,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn
 from ..domain.exceptions import TidalTransientError
 from ..domain.models import AlbumRow, ArtistRow, TrackRow
 from ..domain.protocols import TidalUser
+from ..domain.results import UploadOutcome
 from .folders import assign_playlist_to_v2_folder, ensure_v2_folder_exists
 from .match_policy import decide
 from .network import CHUNK_SIZE, execute_network, fetch_all_async
@@ -174,19 +174,6 @@ async def resolve_track_to_id(
     return None
 
 
-@dataclass
-class UploadOutcome:
-    """What a batch upload actually achieved.
-
-    Tidal answers 200 and silently skips tracks it will not accept, so the
-    accepted and rejected ids are reported separately rather than inferred
-    from the absence of an exception.
-    """
-
-    applied: list[str]
-    rejected: list[str]
-
-
 def build_playlist_uploader(playlist: Any):
     """Builds a batch uploader that reports accepted and rejected ids.
 
@@ -264,7 +251,11 @@ async def import_tracks_category_async(
     # 1. Deduplication and target acquisition
     with console.status(f"[cyan]Scanning existing items in '{dest_name}'...[/cyan]"):
         if is_favorites and hasattr(user, "favorites"):
-            existing_track_ids = {str(t.id) for t in await fetch_all_async(user.favorites.tracks)}
+            # favorites.tracks is a collection attribute on the real tidalapi
+            # surface; the engine's narrow Favorites protocol only declares
+            # the per-id verbs, so cast at the call site.
+            favorites = cast(Any, user.favorites)
+            existing_track_ids = {str(t.id) for t in await fetch_all_async(favorites.tracks)}
         elif not is_favorites and playlist_name:
             existing_playlists = await fetch_all_async(user.playlists)
             playlist = next((p for p in existing_playlists if p.name == playlist_name), None)
@@ -403,7 +394,11 @@ async def import_albums_async(
 
     console.print("[cyan]Importing Liked Albums...[/cyan]")
     with console.status("[cyan]Scanning existing albums...[/cyan]"):
-        existing_albums = await fetch_all_async(user.favorites.albums)
+        # favorites.albums is a collection attribute on the real tidalapi
+        # surface; the engine's narrow Favorites protocol only declares the
+        # per-id verbs, so cast at the call site.
+        favorites = cast(Any, user.favorites)
+        existing_albums = await fetch_all_async(favorites.albums)
         existing_album_ids = {str(a.id) for a in existing_albums}
 
     async def _match_and_add_album_async(album: AlbumRow) -> None:
@@ -459,7 +454,11 @@ async def import_artists_async(
 
     console.print("[cyan]Importing Followed Artists...[/cyan]")
     with console.status("[cyan]Scanning existing artists...[/cyan]"):
-        existing_artists = await fetch_all_async(user.favorites.artists)
+        # favorites.artists is a collection attribute on the real tidalapi
+        # surface; the engine's narrow Favorites protocol only declares the
+        # per-id verbs, so cast at the call site.
+        favorites = cast(Any, user.favorites)
+        existing_artists = await fetch_all_async(favorites.artists)
         existing_artist_ids = {str(a.id) for a in existing_artists}
 
     async def _match_and_add_artist_async(artist: ArtistRow) -> None:

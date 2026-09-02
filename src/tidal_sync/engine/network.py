@@ -369,18 +369,30 @@ def _fetch_all_sync(api_method: Any, **kwargs: Any) -> list[Any]:
     return paginate_sync(fetch_page, page_size=50, key=_id_key)
 
 
-def fetch_blocked_artists(session: tidalapi.Session) -> list[Any]:
+def _fetch_blocked_artists_page(
+    session: tidalapi.Session, endpoint: str, offset: int, limit: int
+) -> list[Any]:
+    """Single-page read against the user's blocked-artists endpoint.
+
+    Shared body of `fetch_blocked_artists` and `fetch_blocked_artists_strict`.
+    The swallow-or-raise decision lives in the wrapper, not here, so the two
+    variants cannot drift on shape or parsing.
     """
-    Fetches the user's blocked or muted artists via an internal API endpoint.
+    params = {"limit": limit, "offset": offset}
+    chunk = session.request.map_request(endpoint, params=params, parse=session.parse_artist)
+    if isinstance(chunk, dict) and "items" in chunk:
+        chunk = [session.parse_artist(item.get("item", item)) for item in chunk["items"]]
+    return chunk if isinstance(chunk, list) else []
 
-    This function manually maps requests to the user blocklist endpoint.
-    It handles pagination to ensure all blocked entries are recovered.
 
-    Args:
-        session (tidalapi.Session): The active Tidal session with a valid user ID.
+def fetch_blocked_artists_strict(session: tidalapi.Session) -> list[Any]:
+    """Like `fetch_blocked_artists`, but a failed page fetch raises.
 
-    Returns:
-        list[Any]: A list of artist objects recovered from the blocklist.
+    Layer: the reconciliation's read path. Invariant: a failed read is not
+    evidence of emptiness, so the strict variant does not collapse an
+    unverifiable write into "confirmed removed". Export and clear keep the
+    swallowing variant because a missing blocklist there is a skipped file,
+    not a false success.
     """
     user = session.user
     if not user or not getattr(user, "id", None):
@@ -389,14 +401,29 @@ def fetch_blocked_artists(session: tidalapi.Session) -> list[Any]:
     endpoint = f"users/{user.id}/blocks/artists"
 
     def fetch_page(offset: int, limit: int) -> list[Any]:
-        params = {"limit": limit, "offset": offset}
-        try:
-            chunk = session.request.map_request(endpoint, params=params, parse=session.parse_artist)
-            if isinstance(chunk, dict) and "items" in chunk:
-                chunk = [session.parse_artist(item.get("item", item)) for item in chunk["items"]]
-            return chunk if isinstance(chunk, list) else []
-        except Exception as e:
-            logger.warning("Failed to fetch blocked artists", error=repr(e))
-            return []
+        return _fetch_blocked_artists_page(session, endpoint, offset, limit)
 
     return paginate_sync(fetch_page, page_size=50, key=_id_key)
+
+
+def fetch_blocked_artists(session: tidalapi.Session) -> list[Any]:
+    """
+    Fetches the user's blocked or muted artists via an internal API endpoint.
+
+    This function manually maps requests to the user blocklist endpoint.
+    It handles pagination to ensure all blocked entries are recovered.
+    A failed page fetch is logged and treated as an empty page; callers that
+    reconcile a write against this list (see `fetch_blocked_artists_strict`)
+    cannot use this swallow without producing false positives.
+
+    Args:
+        session (tidalapi.Session): The active Tidal session with a valid user ID.
+
+    Returns:
+        list[Any]: A list of artist objects recovered from the blocklist.
+    """
+    try:
+        return fetch_blocked_artists_strict(session)
+    except Exception as e:
+        logger.warning("Failed to fetch blocked artists", error=repr(e))
+        return []

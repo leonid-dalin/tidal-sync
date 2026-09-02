@@ -28,21 +28,24 @@ Example:
 """
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
 
 from .auth import _get_all_profiles, get_session, secure_delete_token
-from .domain.enums import ClearTarget
+from .domain.enums import ClearTarget, FavoriteKind
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
+from .engine import curation
 from .engine.exporter import (
     export_algorithmic_mixes_to_disk,
     export_user_favourites_to_disk,
     export_user_playlists_to_disk,
 )
 from .engine.importer import import_collection_from_disk
+from .engine.parser import extract_tidal_id
 from .engine.wiping import purge_target_category_async
 from .infrastructure.logger import (
     setup_audit_logging,
@@ -231,6 +234,199 @@ def clear(
 
     console.print(
         f"[bold green]Successfully cleared '{target.value}' ({report.deleted} items).[/bold green]"
+    )
+
+
+def _run_favourite_command(
+    *,
+    profile: str,
+    verb_name: str,
+    kind: FavoriteKind,
+    references: list[str],
+    verb: Any = None,
+    verb_factory: Callable[[FavoriteKind], Any] | None = None,
+) -> None:
+    """Shared body for the like and unlike commands.
+
+    The engine callable is chosen by ``kind``: ``verb_factory`` is called
+    with the enum so the lookup happens at call time and survives the
+    monkeypatch tests use to swap ``curation.like_tracks`` and friends.
+
+    Resolves each reference through ``extract_tidal_id`` (bare id or share
+    URL), calls the engine verb inside ``asyncio.run``, prints one rich
+    line per id, and exits 1 if the engine reported any rejected id.
+    Authentication and sync errors share the except pair from
+    ``import_data`` so operators see the same one-line red message as the
+    rest of the CLI.
+    """
+    if verb is None:
+        assert verb_factory is not None
+        verb = verb_factory(kind)
+    try:
+        session = get_session(profile)
+        try:
+            ids = [extract_tidal_id(reference) for reference in references]
+        except ValueError as e:
+            raise typer.BadParameter(str(e)) from e
+        outcome = asyncio.run(verb(session, ids))
+    except TidalAuthenticationError as e:
+        console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+        raise typer.Exit(1) from e
+    except TidalSyncError as e:
+        console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
+        raise typer.Exit(1) from e
+
+    for item_id in outcome.applied:
+        console.print(f"  [green]{verb_name} {kind.value} {item_id}[/green]")
+    for item_id in outcome.rejected:
+        console.print(f"  [red]{verb_name} {kind.value} {item_id}[/red]")
+
+    if outcome.rejected:
+        raise typer.Exit(1)
+
+
+# Look up the engine verb by FavoriteKind at call time. The verb resolution
+# happens when the like or unlike command runs, so monkeypatching
+# curation.like_tracks (the pattern the CLI tests use) takes effect without
+# a parallel table to keep in sync.
+def _like_verb(kind: FavoriteKind) -> Any:
+    return getattr(curation, f"like_{kind.value}s")
+
+
+def _unlike_verb(kind: FavoriteKind) -> Any:
+    return getattr(curation, f"unlike_{kind.value}s")
+
+
+# Threshold above which `block` asks the operator to retype the profile name
+# before a destructive batch proceeds. Ten is the figure specified in
+# plan-v2 Task 6; under it the operator sees one rich line per id and nothing
+# else.
+_BLOCK_RAIL_THRESHOLD = 10
+
+
+def _run_block_command(
+    *,
+    profile: str,
+    verb: Any,
+    verb_name: str,
+    references: list[str],
+    rail: bool,
+) -> None:
+    """Shared body for the block and unblock commands.
+
+    Resolves each reference through ``extract_tidal_id`` and calls the engine
+    verb inside ``asyncio.run``. Prints one rich line per id and exits 1 if
+    the engine reported any rejected id. ``block`` is destructive at scale:
+    when ``rail`` is set and the resolved id list exceeds the ten-id
+    threshold, the operator is asked to retype the profile name and a
+    mismatched answer aborts before the engine is called. ``unblock`` passes
+    ``rail=False`` because the verb is restorative.
+    """
+    try:
+        session = get_session(profile)
+        try:
+            ids = [extract_tidal_id(reference) for reference in references]
+        except ValueError as e:
+            raise typer.BadParameter(str(e)) from e
+
+        if rail and len(ids) > _BLOCK_RAIL_THRESHOLD:
+            typed = typer.prompt(f"Type '{profile}' to confirm blocking {len(ids)} artists")
+            if typed != profile:
+                console.print("[red]Confirmation did not match. Aborting.[/red]")
+                raise typer.Exit(1)
+
+        outcome = asyncio.run(verb(session, ids))
+    except TidalAuthenticationError as e:
+        console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+        raise typer.Exit(1) from e
+    except TidalSyncError as e:
+        console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
+        raise typer.Exit(1) from e
+
+    for item_id in outcome.applied:
+        console.print(f"  [green]{verb_name} artist {item_id}[/green]")
+    for item_id in outcome.rejected:
+        console.print(f"  [red]{verb_name} artist {item_id}[/red]")
+
+    if outcome.rejected:
+        raise typer.Exit(1)
+
+
+@app.command()
+def block(
+    ids: Annotated[list[str], typer.Argument(help="One or more artist ids or Tidal share URLs")],
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to block on")
+    ] = "default",
+    force: Annotated[
+        bool, typer.Option("--force", "-f", help="Skip the confirmation prompt for large batches")
+    ] = False,
+) -> None:
+    """Blocks one or more artists on the named profile."""
+    _run_block_command(
+        profile=profile,
+        verb=curation.block_artists,
+        verb_name="Blocked",
+        references=ids,
+        rail=not force,
+    )
+
+
+@app.command()
+def unblock(
+    ids: Annotated[list[str], typer.Argument(help="One or more artist ids or Tidal share URLs")],
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to unblock on")
+    ] = "default",
+) -> None:
+    """Unblocks one or more artists on the named profile."""
+    _run_block_command(
+        profile=profile,
+        verb=curation.unblock_artists,
+        verb_name="Unblocked",
+        references=ids,
+        rail=False,
+    )
+
+
+@app.command()
+def like(
+    kind: Annotated[FavoriteKind, typer.Argument(help="Which kind of favourite to add")],
+    ids: Annotated[list[str], typer.Argument(help="One or more ids or Tidal share URLs")],
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to like into")
+    ] = "default",
+) -> None:
+    """Likes one or more items on the named profile.
+
+    The kind must be one of track, artist, or album; anything else is
+    rejected by Typer before any request goes out (clear <target> is the
+    same positional-enum idiom).
+    """
+    _run_favourite_command(
+        profile=profile,
+        verb_factory=_like_verb,
+        verb_name="Liked",
+        kind=kind,
+        references=ids,
+    )
+
+
+@app.command()
+def unlike(
+    kind: Annotated[FavoriteKind, typer.Argument(help="Which kind of favourite to remove")],
+    ids: Annotated[list[str], typer.Argument(help="One or more ids or Tidal share URLs")],
+    profile: Annotated[
+        str, typer.Option("--profile", "-p", help="Which account profile to unlike from")
+    ] = "default",
+) -> None:
+    """Removes one or more items from the favourites on the named profile."""
+    _run_favourite_command(
+        profile=profile,
+        verb_factory=_unlike_verb,
+        verb_name="Unliked",
+        kind=kind,
+        references=ids,
     )
 
 

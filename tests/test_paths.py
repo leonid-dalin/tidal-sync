@@ -9,7 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from tidal_sync.engine.parser import UniquePathAllocator, sanitize_filename
+from tidal_sync.engine.parser import (
+    UniquePathAllocator,
+    extract_tidal_id,
+    sanitize_filename,
+)
 
 
 def test_collision_gets_a_suffix():
@@ -96,3 +100,35 @@ async def test_one_failing_collection_does_not_cancel_the_others(tmp_path, capsy
     assert "Broken" in out
     assert asyncio is not None
     assert pytest is not None
+
+
+def test_extract_tidal_id_accepts_a_bare_id():
+    """Operators paste ids from the URL bar or copy them from the share sheet,
+    so the parser must accept both the bare id and the full URL form.
+    """
+    assert extract_tidal_id("12345") == "12345"
+
+
+def test_extract_tidal_id_accepts_a_browse_url():
+    """The browse.tidal.com URL pattern ends in /track/<id>."""
+    assert extract_tidal_id("https://listen.tidal.com/track/12345") == "12345"
+
+
+def test_extract_tidal_id_accepts_a_listen_url():
+    """The listen.tidal.com URL pattern is /track/<id>, same shape as browse."""
+    assert extract_tidal_id("https://listen.tidal.com/track/67890") == "67890"
+
+
+def test_extract_tidal_id_strips_query_and_trailing_slash():
+    """Real share links carry tracking query strings and a trailing slash;
+    both must be stripped without dropping the id.
+    """
+    assert extract_tidal_id("https://tidal.com/track/12345/?utm_source=x") == "12345"
+
+
+def test_extract_tidal_id_raises_on_unparseable_input():
+    """A string that contains no id at all is a usage error: the CLI surfaces
+    it as Click exit 2 rather than silently dropping it.
+    """
+    with pytest.raises(ValueError):
+        extract_tidal_id("not-a-tidal-thing")

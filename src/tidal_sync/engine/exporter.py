@@ -242,6 +242,7 @@ async def export_algorithmic_mixes_to_disk(session: tidalapi.Session, base_dir: 
 
         if not all_stations and hasattr(session, "mixes"):
             mixes_func = session.mixes
+            # TODO(f-21): re-enable redundant-expr after inner helpers are typed
             mixes = await execute_network(mixes_func) if callable(mixes_func) else mixes_func
             if isinstance(mixes, list):
                 all_stations.extend(mixes)

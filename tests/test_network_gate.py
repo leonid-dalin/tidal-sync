@@ -7,16 +7,7 @@ serialises the whole run behind one sleeping coroutine.
 import asyncio
 import time
 
-import pytest
-
 from tidal_sync.engine import network
-
-
-@pytest.fixture(autouse=True)
-def _fresh_gate():
-    network.GLOBAL_GATE = network.GlobalTidalGate()
-    yield
-    network.GLOBAL_GATE = network.GlobalTidalGate()
 
 
 async def test_backoff_uses_a_monotonic_clock():

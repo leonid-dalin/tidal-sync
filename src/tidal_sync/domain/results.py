@@ -14,32 +14,18 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # Contact: infoLeonid@protonMail.com
-from enum import StrEnum
+
+from dataclasses import dataclass
 
 
-class ClearTarget(StrEnum):
-    """
-    Valid targets for the CLI clear command.
+@dataclass
+class UploadOutcome:
+    """What a batch of per-item writes actually achieved.
 
-    Using a StrEnum provides native Typer validation and terminal autocomplete,
-    preventing users from passing unsupported category strings.
-    """
-
-    ALL = "all"
-    TRACKS = "tracks"
-    ALBUMS = "albums"
-    ARTISTS = "artists"
-    PLAYLISTS = "playlists"
-
-
-class FavoriteKind(StrEnum):
-    """
-    Valid kinds for the CLI like and unlike commands.
-
-    Using a StrEnum provides native Typer validation and terminal autocomplete,
-    preventing users from passing unsupported category strings.
+    Tidal answers 200 and silently skips items it will not accept, so the
+    accepted and rejected ids are reported separately rather than inferred
+    from the absence of an exception.
     """
 
-    TRACK = "track"
-    ARTIST = "artist"
-    ALBUM = "album"
+    applied: list[str]
+    rejected: list[str]

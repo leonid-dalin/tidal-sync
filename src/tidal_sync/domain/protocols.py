@@ -25,13 +25,42 @@ with the right attributes satisfies them.
 from typing import Any, Protocol
 
 
+class Favorites(Protocol):
+    """The subset of tidalapi's favourites surface the engine touches.
+
+    Each method declares the narrow ``str`` form the engine passes. The real
+    tidalapi signatures are wider (e.g. ``add_track`` accepts ``list[str] | str``);
+    the engine fans out per id because a batched call returns one boolean
+    and cannot say which id failed.
+    """
+
+    # The engine reads these as paginated collection callables (exporter and
+    # wiping both hand them to fetch_all_async). They are Any because tidalapi
+    # types them loosely and the engine only ever paginates them.
+    @property
+    def tracks(self) -> Any: ...
+
+    @property
+    def albums(self) -> Any: ...
+
+    @property
+    def artists(self) -> Any: ...
+
+    def add_track(self, item_id: str) -> bool: ...
+    def add_artist(self, item_id: str) -> bool: ...
+    def add_album(self, item_id: str) -> bool: ...
+    def remove_track(self, item_id: str) -> bool: ...
+    def remove_artist(self, item_id: str) -> bool: ...
+    def remove_album(self, item_id: str) -> bool: ...
+
+
 class TidalUser(Protocol):
     """The subset of tidalapi's logged-in user the engine depends on."""
 
     id: int
 
     @property
-    def favorites(self) -> Any: ...
+    def favorites(self) -> Favorites: ...
 
     @property
     def playlists(self) -> Any: ...

@@ -36,7 +36,7 @@ import typer
 from .cli_prompts import prompt_unblock
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
 from .engine.curation import block_artists, unblock_artists
-from .engine.filterlist import FormatError, parse_filter_list
+from .engine.filterlist import FormatError
 from .engine.filterlist_apply import plan_apply
 from .engine.filterlist_fetch import FetchError, fetch_source
 from .engine.filterlist_store import (
@@ -98,8 +98,13 @@ def add(
 ) -> None:
     """Subscribe to a filter list, validating the format before persisting.
 
-    The fetch here is throwaway: the goal is to reject an unsupported
-    extension at add time so a bad subscription never reaches apply.
+    The fetch here is the same one ``update`` performs: the goal is to
+    reject an unsupported extension at add time so a bad subscription
+    never reaches apply, and to record ``last_count`` and
+    ``last_fetched`` plus the cache file so ``show`` reflects the
+    subscription truthfully. Reusing ``fetch_source`` keeps the four
+    fetch caps (HTTPS only, 1 MiB cap, content-type allowlist, timeout)
+    on the validation path too.
     """
     from .cli import console
 
@@ -107,11 +112,11 @@ def add(
         fmt = _detect_format(source)
         if fmt not in _SUPPORTED_FORMATS:
             raise FormatError(f"unsupported filter-list format: {fmt!r}")
-        # Parse a minimal stub so the supported-formats branch is exercised
-        # even when the operator points us at a remote URL we cannot reach
-        # offline. Real fetch is performed by update or apply.
-        parse_filter_list(b"# probe", fmt)
+        count = fetch_source(source, fmt, cache_path(name, fmt))
     except FormatError as exc:
+        console.print(f"[bold red]Refused subscription:[/bold red] {exc}")
+        raise typer.Exit(1) from exc
+    except FetchError as exc:
         console.print(f"[bold red]Refused subscription:[/bold red] {exc}")
         raise typer.Exit(1) from exc
 
@@ -119,8 +124,8 @@ def add(
         name=name,
         source=source,
         format=fmt,
-        last_fetched=None,
-        last_count=0,
+        last_fetched=_now_iso(),
+        last_count=count,
         last_error=None,
     )
     add_subscription(sub)

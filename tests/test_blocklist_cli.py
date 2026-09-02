@@ -399,9 +399,7 @@ def test_blocklist_add_writes_cache_file_with_source_contents(
     _stub_fetch(monkeypatch)
 
     cache_dir = tmp_path / "cache"
-    monkeypatch.setattr(
-        cli_blocklist, "cache_path", lambda name, fmt: cache_dir / f"{name}.{fmt}"
-    )
+    monkeypatch.setattr(cli_blocklist, "cache_path", lambda name, fmt: cache_dir / f"{name}.{fmt}")
 
     persisted: list[Subscription] = []
     monkeypatch.setattr(cli_blocklist, "add_subscription", lambda sub: persisted.append(sub))
@@ -457,7 +455,7 @@ def test_blocklist_add_rejects_source_that_fails_to_fetch(
     monkeypatch.setattr(cli_blocklist, "add_subscription", lambda sub: persisted.append(sub))
 
     def _fetch(source: str, fmt: str, dest: Path) -> int:
-        raise FetchError(f"Fetch failed: HTTP 503")
+        raise FetchError("Fetch failed: HTTP 503")
 
     monkeypatch.setattr(cli_blocklist, "fetch_source", _fetch)
 

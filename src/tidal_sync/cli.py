@@ -45,6 +45,9 @@ from .engine.exporter import (
     export_user_favourites_to_disk,
     export_user_playlists_to_disk,
 )
+from .engine.filterlist import FormatError, parse_filter_list
+from .engine.filterlist_apply import plan_apply
+from .engine.filterlist_store import Subscription, load_subscriptions
 from .engine.importer import import_collection_from_disk
 from .engine.parser import extract_tidal_id
 from .engine.wiping import purge_target_category_async
@@ -353,23 +356,175 @@ def _run_block_command(
         raise typer.Exit(1)
 
 
+def _resolve_block_lists(
+    *,
+    from_list: str | None,
+    all_from: Path | None,
+) -> list[Subscription]:
+    """Build the subscription list the engine will run.
+
+    ``--from-list`` loads a single stored subscription by name; an
+    unknown name exits 1 with a clear message rather than blocking
+    nothing. ``--all-from`` synthesises a one-off subscription whose
+    source is the given file path and whose format is read off the
+    extension; an unsupported extension exits 1 before the engine
+    runs. When neither flag is given, returns an empty list so the
+    positional path is the only source of ids.
+    """
+    subs: list[Subscription] = []
+    if from_list is not None:
+        found = [s for s in load_subscriptions() if s.name == from_list]
+        if not found:
+            console.print(f"[bold red]No such subscription:[/bold red] {from_list}")
+            raise typer.Exit(1)
+        subs.append(found[0])
+    if all_from is not None:
+        dot = str(all_from).rfind(".")
+        if dot == -1 or dot == len(str(all_from)) - 1:
+            console.print(f"[bold red]Unsupported filter-list format:[/bold red] {all_from}")
+            raise typer.Exit(1)
+        fmt = str(all_from)[dot + 1 :].lower()
+        try:
+            # Probe so an unsupported extension is reported through the
+            # same FormatError path as the store, before any write.
+            parse_filter_list(b"# probe", fmt)
+        except FormatError as exc:
+            console.print(f"[bold red]{exc}[/bold red]")
+            raise typer.Exit(1) from exc
+        subs.append(
+            Subscription(
+                name=f"one-off-{all_from.name}",
+                source=str(all_from),
+                format=fmt,
+                last_fetched=None,
+            )
+        )
+    return subs
+
+
+def _run_block_with_lists(
+    *,
+    profile: str,
+    positional: list[str],
+    subs: list[Subscription],
+    force: bool,
+) -> None:
+    """Run ``plan_apply`` on the union of positional and list ids.
+
+    Routes around ``_run_block_command`` so the new flags do not widen
+    its signature and risk changing ``unblock``. The rail fires on the
+    union length, matching ``blocklist apply``.
+    """
+    try:
+        session = get_session(profile)
+        plan = asyncio.run(
+            plan_apply(
+                session,
+                subs,
+                dry_run=False,
+                prune=False,
+            )
+        )
+    except TidalAuthenticationError as e:
+        console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+        raise typer.Exit(1) from e
+    except TidalSyncError as e:
+        console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
+        raise typer.Exit(1) from e
+
+    # Drop positional ids already covered by the subscription union.
+    list_ids = {tid for tid, _name in plan.to_block}
+    list_ids.update(tid for tid, _name in plan.already_blocked)
+    leftover = [i for i in positional if i not in list_ids]
+
+    union_count = len(list_ids) + len(leftover)
+    if not force and union_count > _BLOCK_RAIL_THRESHOLD:
+        typed = typer.prompt(f"Type '{profile}' to confirm blocking {union_count} artists")
+        if typed != profile:
+            console.print("[red]Confirmation did not match. Aborting.[/red]")
+            raise typer.Exit(1)
+
+    if leftover:
+        leftover_outcome = asyncio.run(curation.block_artists(session, leftover))
+        for item_id in leftover_outcome.applied:
+            console.print(f"  [green]Blocked artist {item_id}[/green]")
+        for item_id in leftover_outcome.rejected:
+            console.print(f"  [red]Blocked artist {item_id}[/red]")
+        if leftover_outcome.rejected:
+            raise typer.Exit(1)
+        for tid, _name in plan.to_block:
+            console.print(f"  [green]Blocked artist {tid}[/green]")
+        for tid, _name in plan.already_blocked:
+            console.print(f"  [cyan]Blocked artist {tid}[/cyan]")
+        return
+
+    for tid, _name in plan.to_block:
+        console.print(f"  [green]Blocked artist {tid}[/green]")
+    for tid, _name in plan.already_blocked:
+        console.print(f"  [cyan]Blocked artist {tid}[/cyan]")
+
+    if plan.errors:
+        for sub_name, err in plan.errors:
+            console.print(f"  [red]error {sub_name}: {err}[/red]")
+        raise typer.Exit(1)
+
+
 @app.command()
 def block(
-    ids: Annotated[list[str], typer.Argument(help="One or more artist ids or Tidal share URLs")],
+    ids: Annotated[
+        list[str],
+        typer.Argument(help="One or more artist ids or Tidal share URLs", default_factory=list),
+    ],
     profile: Annotated[
         str, typer.Option("--profile", "-p", help="Which account profile to block on")
     ] = "default",
     force: Annotated[
         bool, typer.Option("--force", "-f", help="Skip the confirmation prompt for large batches")
     ] = False,
+    from_list: Annotated[
+        str | None,
+        typer.Option(
+            "--from-list",
+            help="Block every id in the stored subscription with this name",
+        ),
+    ] = None,
+    all_from: Annotated[
+        Path | None,
+        typer.Option(
+            "--all-from",
+            exists=False,
+            help="Block every id in a one-off filter-list file (parsed by extension)",
+        ),
+    ] = None,
 ) -> None:
-    """Blocks one or more artists on the named profile."""
-    _run_block_command(
+    """Blocks one or more artists on the named profile.
+
+    With ``--from-list`` or ``--all-from``, the union of positional and
+    list ids is sent through the apply engine; the rail still fires on
+    the union length, matching ``blocklist apply``.
+    """
+    if from_list is None and all_from is None:
+        _run_block_command(
+            profile=profile,
+            verb=curation.block_artists,
+            verb_name="Blocked",
+            references=ids,
+            rail=not force,
+        )
+        return
+
+    subs = _resolve_block_lists(from_list=from_list, all_from=all_from)
+    # Resolve positional ids here so the union seen by the rail and the
+    # engine is clean.
+    try:
+        positional = [extract_tidal_id(reference) for reference in ids]
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
+    _run_block_with_lists(
         profile=profile,
-        verb=curation.block_artists,
-        verb_name="Blocked",
-        references=ids,
-        rail=not force,
+        positional=positional,
+        subs=subs,
+        force=force,
     )
 
 

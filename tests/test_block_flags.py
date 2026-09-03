@@ -19,12 +19,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import orjson
 import pytest
 from typer.testing import CliRunner
 
 from tidal_sync import cli as cli_module
 from tidal_sync.cli import app
 from tidal_sync.domain.results import UploadOutcome
+from tidal_sync.engine.filterlist import detect_format
 from tidal_sync.engine.filterlist_apply import ApplyOutcome, ApplyPlan
 from tidal_sync.engine.filterlist_store import Subscription
 
@@ -342,3 +344,75 @@ def test_block_with_no_ids_and_no_flags_is_a_usage_error(
 
     assert result.exit_code != 0, result.output
     assert engine_calls == [], "block with no input must never call block_artists"
+
+
+# ---------------------------------------------------------------------------
+# Task 8: one canonical extension resolver, no tracebacks on ordinary inputs.
+#
+# Background: ``detect_format`` is implemented once in
+# ``engine/filterlist`` and called by both CLI modules; an
+# extension is read off the URL path only (a query string or fragment
+# is not part of it). ``blocklist add`` wraps ``cache_path`` so an
+# invalid subscription name becomes an exit-1 message rather than a
+# raw ``ValueError`` traceback, and ``--all-from`` synthesises a
+# single ``one-off`` subscription so repeated invocations do not
+# accumulate cache files.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("suffix", ["txt", "csv", "json"])
+def test_all_from_reports_cleanly_for_every_format(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, suffix: str
+) -> None:
+    """No format may reach the operator as a traceback."""
+    bodies = {
+        "txt": b"4894212\n",
+        "csv": b"artist_name,tidal_id\nX,4894212\n",
+        "json": b'["4894212"]',
+    }
+    source = tmp_path / f"list.{suffix}"
+    source.write_bytes(bodies[suffix])
+    _patch_cli_common(monkeypatch, subs=[])
+
+    result = runner.invoke(app, ["block", "--all-from", str(source)])
+
+    assert not isinstance(result.exception, (ValueError, orjson.JSONDecodeError)), result.output
+
+
+def test_all_from_a_file_whose_name_has_a_space(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A perfectly ordinary filename must not raise ValueError."""
+    source = tmp_path / "my list.txt"
+    source.write_text("4894212\n", encoding="utf-8")
+    _patch_cli_common(monkeypatch, subs=[])
+
+    result = runner.invoke(app, ["block", "--all-from", str(source)])
+
+    assert not isinstance(result.exception, ValueError), result.output
+
+
+def test_blocklist_add_rejects_a_bad_name_with_a_message(tmp_path: Path) -> None:
+    """An invalid subscription name exits 1 with a message, not a traceback."""
+    source = tmp_path / "x.txt"
+    source.write_text("4894212\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["blocklist", "add", "bad name", str(source)])
+
+    assert result.exit_code == 1, result.output
+    assert "Invalid subscription name" in result.output
+    assert not isinstance(result.exception, ValueError), result.output
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("https://example.com/list.txt", "txt"),
+        ("https://example.com/list.txt?v=2", "txt"),
+        ("https://example.com/list.json#frag", "json"),
+        ("./local/list.csv", "csv"),
+    ],
+)
+def test_detect_format_reads_the_path_not_the_query(source: str, expected: str) -> None:
+    """A query string or fragment is not part of the extension."""
+    assert detect_format(source) == expected

@@ -27,6 +27,7 @@ sits here: a format hint selects the parser, and anything else is a
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlparse
 
@@ -40,19 +41,21 @@ SUPPORTED_FORMATS: tuple[str, ...] = ("txt", "csv", "json")
 
 
 def detect_format(source: str) -> str:
-    """Return the lowercase extension of ``source`` taken from its URL path.
+    """Read the filter-list format off a URL or path extension.
 
-    The query string is intentionally ignored: a cache-busting ``?v=2``
-    suffix must not change the detected format. Raises ``FormatError``
-    when ``source`` carries no extension, so the caller does not have
-    to repeat that check.
+    The extension is taken from the URL path, so a query string or a
+    fragment does not become part of it. This is the only extension
+    resolver; two divergent copies is how the query-string case was
+    missed in the first place.
     """
-    parsed = urlparse(source)
-    path = parsed.path or source
-    dot = path.rfind(".")
-    if dot == -1 or dot == len(path) - 1:
-        raise FormatError(f"cannot detect format: source {source!r} has no extension")
-    return path[dot + 1 :].lower()
+    path = urlparse(source).path if "://" in source else source
+    suffix = PurePosixPath(path).suffix.lstrip(".").lower()
+    if suffix not in SUPPORTED_FORMATS:
+        raise FormatError(
+            f"unsupported filter-list format: {suffix or source!r}; "
+            f"expected one of {', '.join(SUPPORTED_FORMATS)}"
+        )
+    return suffix
 
 
 class FormatError(Exception):

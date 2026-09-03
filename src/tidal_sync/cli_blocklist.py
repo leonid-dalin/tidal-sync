@@ -41,10 +41,10 @@ import typer
 
 from .auth import get_session
 from .cli_prompts import prompt_unblock
-from .cli_shared import BLOCK_RAIL_THRESHOLD, _report_outcome, console
+from .cli_shared import BLOCK_RAIL_THRESHOLD, _report_outcome, console, now_iso
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
 from .engine.filterlist import FormatError, detect_format
-from .engine.filterlist_apply import MAX_APPLY_IDS, ApplyPlan, _now_iso, execute_apply, plan_apply
+from .engine.filterlist_apply import MAX_APPLY_IDS, ApplyPlan, execute_apply, plan_apply
 from .engine.filterlist_fetch import FetchError, fetch_source
 from .engine.filterlist_store import (
     StoreError,
@@ -147,7 +147,7 @@ def add(
         name=name,
         source=source,
         format=fmt,
-        last_fetched=_now_iso(),
+        last_fetched=now_iso(),
         last_count=count,
         last_error=None,
     )
@@ -195,7 +195,7 @@ def update(
         dest = cache_path(sub.name, sub.format)
         try:
             count = fetch_source(sub.source, sub.format, dest)
-            sub.last_fetched = _now_iso()
+            sub.last_fetched = now_iso()
             sub.last_count = count
             sub.last_error = None
         except FetchError as exc:

@@ -36,10 +36,11 @@ plan; it owns the cap check and the calls to ``block_artists`` and
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 
 import tidalapi
 
+from ..cli_shared import now_iso
 from ..domain.results import UploadOutcome
 
 # Imported here so tests can monkeypatch by attribute. The real
@@ -60,12 +61,8 @@ MAX_APPLY_IDS: int = 5000
 
 
 def _now_iso() -> str:
-    """The current UTC time as an ISO string.
-
-    A module-level helper so tests can monkeypatch a deterministic
-    clock without the engine importing time itself.
-    """
-    return datetime.now(UTC).isoformat()
+    """Local indirection over ``now_iso`` so tests can monkeypatch a deterministic clock."""
+    return now_iso()
 
 
 @dataclass

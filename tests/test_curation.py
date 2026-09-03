@@ -6,7 +6,11 @@ import pytest
 import requests
 
 from tests.fakes import FakeSession
-from tidal_sync.domain.exceptions import TidalRateLimitError, TidalTransientError
+from tidal_sync.domain.exceptions import (
+    BatchTooLarge,
+    TidalRateLimitError,
+    TidalTransientError,
+)
 from tidal_sync.domain.results import UploadOutcome
 from tidal_sync.engine import curation
 
@@ -564,3 +568,21 @@ async def test_a_genuinely_empty_blocklist_still_confirms_an_unblock():
 
     assert outcome.applied == ["7", "8"]
     assert outcome.rejected == []
+
+
+async def test_unblock_artists_refuses_a_batch_over_the_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both write verbs spend the same rate budget, so both are capped.
+
+    ``--prune`` sends the whole unlisted set here, and that set comes from
+    the live blocklist rather than from a subscription, so nothing upstream
+    bounds it.
+    """
+    calls: list[str] = []
+    monkeypatch.setattr(curation, "_apply_per_id", lambda *a, **k: calls.append("wrote"))
+
+    with pytest.raises(BatchTooLarge):
+        await curation.unblock_artists(object(), [str(i) for i in range(5001)])
+
+    assert calls == [], "no write may be attempted once the ceiling is breached"

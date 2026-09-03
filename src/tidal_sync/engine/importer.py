@@ -441,8 +441,10 @@ async def import_artists_async(
 ) -> None:
     """Matches and saves artists to the user's followed artists.
 
-    Blocked artists are export-only; Tidal exposes no API to restore them,
-    so only followed artists are imported.
+    Blocked artists are not imported: an import path is not implemented.
+    Tidal does expose a working unblock verb (DELETE
+    users/{user_id}/blocks/artists/{artist_id}, see curation.unblock_artists),
+    so a future import is in scope, just not built today.
     """
     artists = await asyncio.to_thread(parse_csv, file_path, ArtistRow)
 

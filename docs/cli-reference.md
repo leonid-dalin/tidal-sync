@@ -285,7 +285,7 @@ Reads: the session token for the selected profile. Writes: nothing on disk; the 
 
 **Synopsis**
 ```bash
-tidal-sync block <ids>... [--profile NAME] [-p NAME] [--force] [-f]
+tidal-sync block [ids]... [--profile NAME] [-p NAME] [--force] [-f] [--from-list NAME] [--all-from FILE]
 ```
 
 **Description**
@@ -293,14 +293,18 @@ Blocks one or more artists on the named profile. Each id is sent on its own POST
 
 The command is destructive at scale. When the resolved id list exceeds ten ids and `--force` is absent, the CLI prints one rich line per id then asks the operator to retype the profile name; a mismatched answer aborts before any request goes out. Ten is the threshold under which no prompt appears. Use `--force` in automation to skip the prompt.
 
+`--from-list` and `--all-from` route the listed ids through the apply engine that powers `blocklist apply`; the union of positional and list ids still trips the ten-id rail, so a large list is confirmed by the same profile-name prompt. `--from-list` loads one subscription by name from the local store and exits 1 with a clear message if the name is unknown. `--all-from` parses the named file by extension (`txt`, `csv`, `json`); an unsupported extension exits 1 before any write. Positional ids already covered by the list are de-duplicated.
+
 **Arguments**
 
-* `ids` (required, one or more): One or more artist ids or Tidal share URLs.
+* `ids` (optional, one or more): One or more artist ids or Tidal share URLs. Optional when `--from-list` or `--all-from` provides the ids.
 
 **Options**
 
 * `--profile`, `-p` NAME: Which account profile to block on. Default: `default`.
 * `--force`, `-f`: Skip the confirmation prompt for batches above the ten-id rail. Default: `False`.
+* `--from-list` NAME: Block every id in the stored subscription with this name. The subscription must already exist under `~/.tidal_sync/filter_lists/`.
+* `--all-from` FILE: Block every id in a one-off filter-list file, parsed by extension. Accepts `txt`, `csv`, `json`. An unsupported extension exits 1.
 
 **Examples**
 ```bash
@@ -312,10 +316,16 @@ tidal-sync block https://tidal.com/artist/4894212 -p target
 
 # Block a large batch without prompting
 tidal-sync block $(cat blocklist.txt) --force
+
+# Block every id in a stored subscription
+tidal-sync block --from-list spam-allow-1
+
+# Block every id in a one-off filter-list file
+tidal-sync block --all-from ./my-blocklist.json
 ```
 
 **Reads and writes**
-Reads: the session token for the selected profile. Writes: nothing on disk; the named artists disappear from the Tidal account discoverable catalogue and appear in the account's block list.
+Reads: the session token for the selected profile; for `--from-list`, the subscription record under `~/.tidal_sync/filter_lists/`; for `--all-from`, the named file. Writes: nothing on disk; the named artists disappear from the Tidal account discoverable catalogue and appear in the account's block list.
 
 ---
 
@@ -374,6 +384,71 @@ tidal-sync profiles
 **Reads and writes**
 Reads: the local profile store. Writes: nothing.
 
+---
+
+### `blocklist`
+
+**Synopsis**
+```bash
+tidal-sync blocklist [--help]
+```
+
+**Description**
+Manages filter-list subscriptions and applies them to your Tidal blocklist. A subscription is a named reference to a remote or local artist-id list in one of three formats (`txt`, `csv`, `json`). The store lives at `~/.tidal_sync/filter_lists/`; the index file is `subscriptions.json` and cached bodies land under `~/.tidal_sync/filter_lists/cache/`. The store is kept in its own directory so the profile scanner in `auth.py`, which globs `*.json` for files carrying a `user_id`, never mistakes a subscription record for a Tidal token.
+
+Subscription names follow the same discipline as profile names: one to 64 characters, starting with a letter, digit or underscore, then letters, digits, underscores, dashes or dots, and never containing `..`. Names that break the rule exit 1 before any file is touched.
+
+If `subscriptions.json` is missing, malformed or otherwise unreadable, the CLI prints `Subscription store unreadable: <detail>` together with the store path and a hint to fix or delete `subscriptions.json` and retry, then exits 1. The store is never silently read as empty.
+
+Source fetching is governed by four non-negotiable caps, each pinned by a test:
+
+* HTTPS only. An `http://` URL is refused without retry.
+* 1 MiB per fetch. The body is streamed and the running total is checked per chunk, so an oversized body is rejected without being buffered.
+* Content-Type allowlist: `text/plain`, `text/csv`, `application/json`. Comparison ignores any `;charset=...` parameter and folds case. A missing header is a refusal.
+* An explicit timeout. A hung fetch raises `FetchError` rather than hanging the CLI.
+
+`apply` adds a fifth cap: a hard ceiling of `5000` ids per apply run. The ceiling is checked before any write, but the live blocklist read used to compute the plan has already happened at that point, so a capped run costs one read and no writes.
+
+The ten-id confirmation rail from `block` carries over to `blocklist apply`: when the resolved union exceeds ten ids and `--force` is absent, the CLI asks the operator to retype the profile name and a mismatched answer aborts before any Tidal write. The rail is skipped under `--force`.
+
+**Subcommands**
+
+* `blocklist add <name> <source>`: subscribe to a filter list, validating the format before persisting. Performs the same fetch `update` would, so an unsupported extension is rejected at add time and a bad subscription never reaches `apply`. Records `last_count`, `last_fetched` and the cache file so `show` reflects the subscription truthfully. This subcommand has no options.
+* `blocklist remove <name>`: drop a subscription by name. Exits 1 with `No such subscription: <name>` if the name is not in the store. This subcommand has no options.
+* `blocklist update [name]`: refetch one or every subscription and record per-subscription errors. Omit `name` to update every subscription. An unknown `name` exits 1 with `No such subscription: <name>` and no other subscription is touched. If a subscription fails to fetch, the error is recorded against that subscription and printed next to its name, the other subscriptions are still updated, and the command exits 1. This subcommand has no options.
+* `blocklist show`: print every subscription with its source, format and last fetch state. This subcommand has no options.
+* `blocklist apply [--profile NAME] [-p NAME] [--dry-run] [--prune] [--force]`: apply the union of every subscription to the named profile. `--profile` chooses the Tidal account; the default is `default`. Fetches stale subscriptions, parses cached ones, partitions against the live blocklist, and (unless `--dry-run`) blocks the missing set. `--prune` extends the destructive reach to artists on the live blocklist named by no subscription; the unblock prompt is the CLI's interactive path and is skipped under `--force`. The unblock prompt labels each artist as `Name (id)` with the name first so an operator scans names, not ids.
+
+**Options on `apply`**
+
+* `--profile`, `-p` NAME: Which account profile to apply on. Default: `default`. This is the only subcommand that takes `--profile`; the others manage the local subscription store, which is global to the machine, and do not need an account.
+
+**Examples**
+```bash
+# Subscribe to a hosted JSON block list
+tidal-sync blocklist add spam-allow-1 https://example.com/blocklist.json
+
+# Subscribe to a local text file
+tidal-sync blocklist add my-local ./my-blocklist.txt
+
+# List every subscription with its last fetch state
+tidal-sync blocklist show
+
+# Refetch every subscription
+tidal-sync blocklist update
+
+# Preview an apply without writing
+tidal-sync blocklist apply --dry-run
+
+# Apply and also unblock artists named by no subscription, in automation
+tidal-sync blocklist apply --prune --force -p target
+```
+
+**Reads and writes**
+Reads: for `add`, `update` and the fetch path of `apply`, the named remote URL or local file under the four caps above; for `apply` and `--prune`, the session token for the selected profile and the live blocklist. Writes: subscription records and cache files under `~/.tidal_sync/filter_lists/`; on `apply` (without `--dry-run`) and `--prune`, the Tidal account block list.
+
+---
+
 ## Error handling
 
 The CLI is built so operators get a clear message, not a crash dump.
@@ -395,6 +470,12 @@ In every case the process returns a non-zero exit code suitable for scripting, a
 |   import ──► read CSV(s) ──► sync to account       |
 |   export ──► read library ──► write CSV backup     |
 |   clear  ──► confirm ──► purge category (irreversible)|
+|   block  ──► confirm ──► POST one artist per id   |
+|   unblock ► restore one artist per id (no rail)   |
+|   blocklist add/remove/update/show                 |
+|     ──► manage subscriptions under                  |
+|         ~/.tidal_sync/filter_lists/                 |
+|   blocklist apply ──► confirm ──► partition + block|
 |   profiles ► list stored profiles + user IDs       |
 +---------------------------------------------------+
 PLACEHOLDER

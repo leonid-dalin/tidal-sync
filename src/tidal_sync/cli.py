@@ -33,17 +33,22 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
-from rich.console import Console
 
 from .auth import _get_all_profiles, get_session, secure_delete_token
+from .cli_blocklist import blocklist_app, report_store_error
+from .cli_shared import BLOCK_RAIL_THRESHOLD, console, report_outcome
 from .domain.enums import ClearTarget, FavoriteKind
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
+from .domain.results import UploadOutcome
 from .engine import curation
 from .engine.exporter import (
     export_algorithmic_mixes_to_disk,
     export_user_favourites_to_disk,
     export_user_playlists_to_disk,
 )
+from .engine.filterlist import FormatError, detect_format
+from .engine.filterlist_apply import plan_apply
+from .engine.filterlist_store import StoreError, Subscription, load_subscriptions
 from .engine.importer import import_collection_from_disk
 from .engine.parser import extract_tidal_id
 from .engine.wiping import purge_target_category_async
@@ -56,7 +61,6 @@ from .infrastructure.logger import (
 app = typer.Typer(
     help="Modern CLI for managing, importing, exporting, and cloning Tidal libraries."
 )
-console = Console()
 setup_global_logging()
 
 
@@ -298,10 +302,14 @@ def _unlike_verb(kind: FavoriteKind) -> Any:
 
 
 # Threshold above which `block` asks the operator to retype the profile name
-# before a destructive batch proceeds. Ten is the figure specified in
-# plan-v2 Task 6; under it the operator sees one rich line per id and nothing
-# else.
-_BLOCK_RAIL_THRESHOLD = 10
+# before a destructive batch proceeds. The figure lives in ``cli_shared`` so
+# ``cli_blocklist`` can see the same value without a lazy import from this
+# module. Ten is the figure specified in plan-v2 Task 6.
+
+# Single fixed name for the synthetic subscription built from ``--all-from``:
+# the same value across invocations keeps one cache entry instead of
+# accumulating ``one-off-<filename>`` files in the store.
+_ONE_OFF_NAME = "one-off"
 
 
 def _run_block_command(
@@ -329,7 +337,7 @@ def _run_block_command(
         except ValueError as e:
             raise typer.BadParameter(str(e)) from e
 
-        if rail and len(ids) > _BLOCK_RAIL_THRESHOLD:
+        if rail and len(ids) > BLOCK_RAIL_THRESHOLD:
             typed = typer.prompt(f"Type '{profile}' to confirm blocking {len(ids)} artists")
             if typed != profile:
                 console.print("[red]Confirmation did not match. Aborting.[/red]")
@@ -352,23 +360,164 @@ def _run_block_command(
         raise typer.Exit(1)
 
 
+def _resolve_block_lists(
+    *,
+    from_list: str | None,
+    all_from: Path | None,
+) -> list[Subscription]:
+    """Build the subscription list the engine will run.
+
+    ``--from-list`` loads a single stored subscription by name; an
+    unknown name exits 1 with a clear message rather than blocking
+    nothing. ``--all-from`` synthesises a one-off subscription whose
+    source is the given file path and whose format is read off the
+    extension; an unsupported extension exits 1 before the engine
+    runs. When neither flag is given, returns an empty list so the
+    positional path is the only source of ids.
+    """
+    subs: list[Subscription] = []
+    if from_list is not None:
+        try:
+            found = [s for s in load_subscriptions() if s.name == from_list]
+        except StoreError as exc:
+            report_store_error(exc)
+        if not found:
+            console.print(f"[bold red]No such subscription:[/bold red] {from_list}")
+            raise typer.Exit(1)
+        subs.append(found[0])
+    if all_from is not None:
+        try:
+            fmt = detect_format(str(all_from))
+        except FormatError as exc:
+            console.print(f"[bold red]{exc}[/bold red]")
+            raise typer.Exit(1) from exc
+        if not all_from.is_file():
+            console.print(f"[bold red]No such file:[/bold red] {all_from}")
+            raise typer.Exit(1)
+        subs.append(
+            Subscription(
+                name=_ONE_OFF_NAME,
+                source=str(all_from),
+                format=fmt,
+                last_fetched=None,
+            )
+        )
+    return subs
+
+
+def _run_block_with_lists(
+    *,
+    profile: str,
+    positional: list[str],
+    subs: list[Subscription],
+    force: bool,
+) -> None:
+    """Run ``block`` over the union of positional and subscription ids.
+
+    Routes around ``_run_block_command`` so the new flags do not widen
+    its signature and risk changing ``unblock``. Positional ids join
+    the plan's ids in one batch: two writes existed only because the
+    positional ids were not in the plan, and the de-duplication, the
+    two reporting blocks and the third event loop were downstream of
+    that split. The rail and cap now measure ``to_write``, the same
+    list that gets written.
+    """
+    try:
+        session = get_session(profile)
+        plan = asyncio.run(plan_apply(session, subs))
+        list_ids = [tid for tid, _name in plan.to_block]
+        covered = set(list_ids) | {tid for tid, _name in plan.already_blocked}
+        to_write = list_ids + [i for i in positional if i not in covered]
+
+        if not force and len(to_write) > BLOCK_RAIL_THRESHOLD:
+            typed = typer.prompt(f"Type '{profile}' to confirm blocking {len(to_write)} artists")
+            if typed != profile:
+                console.print("[red]Confirmation did not match. Aborting.[/red]")
+                raise typer.Exit(1)
+
+        outcome = (
+            asyncio.run(curation.block_artists(session, to_write))
+            if to_write
+            else UploadOutcome(applied=[], rejected=[])
+        )
+    except TidalAuthenticationError as e:
+        console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
+        raise typer.Exit(1) from e
+    except TidalSyncError as e:
+        console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
+        raise typer.Exit(1) from e
+
+    failed = report_outcome(outcome, "Blocked artist", "block failed")
+
+    for tid, _name in plan.already_blocked:
+        console.print(f"  [cyan]Already blocked artist {tid}[/cyan]")
+
+    for sub_name, err in plan.errors:
+        console.print(f"  [red]error {sub_name}: {err}[/red]")
+
+    if failed or plan.errors:
+        raise typer.Exit(1)
+
+
 @app.command()
 def block(
-    ids: Annotated[list[str], typer.Argument(help="One or more artist ids or Tidal share URLs")],
+    ids: Annotated[
+        list[str] | None,
+        typer.Argument(help="One or more artist ids or Tidal share URLs"),
+    ] = None,
     profile: Annotated[
         str, typer.Option("--profile", "-p", help="Which account profile to block on")
     ] = "default",
     force: Annotated[
         bool, typer.Option("--force", "-f", help="Skip the confirmation prompt for large batches")
     ] = False,
+    from_list: Annotated[
+        str | None,
+        typer.Option(
+            "--from-list",
+            help="Block every id in the stored subscription with this name",
+        ),
+    ] = None,
+    all_from: Annotated[
+        Path | None,
+        typer.Option(
+            "--all-from",
+            exists=False,
+            help="Block every id in a one-off filter-list file (parsed by extension)",
+        ),
+    ] = None,
 ) -> None:
-    """Blocks one or more artists on the named profile."""
-    _run_block_command(
+    """Blocks one or more artists on the named profile.
+
+    With ``--from-list`` or ``--all-from``, the union of positional and
+    list ids is sent through the apply engine; the rail still fires on
+    the union length, matching ``blocklist apply``.
+    """
+    ids = ids or []
+    if from_list is None and all_from is None and not ids:
+        raise typer.BadParameter("give at least one id, or use --from-list or --all-from")
+    if from_list is None and all_from is None:
+        _run_block_command(
+            profile=profile,
+            verb=curation.block_artists,
+            verb_name="Blocked",
+            references=ids,
+            rail=not force,
+        )
+        return
+
+    subs = _resolve_block_lists(from_list=from_list, all_from=all_from)
+    # Resolve positional ids here so the union seen by the rail and the
+    # engine is clean.
+    try:
+        positional = [extract_tidal_id(reference) for reference in ids]
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
+    _run_block_with_lists(
         profile=profile,
-        verb=curation.block_artists,
-        verb_name="Blocked",
-        references=ids,
-        rail=not force,
+        positional=positional,
+        subs=subs,
+        force=force,
     )
 
 
@@ -446,6 +595,8 @@ def list_profiles() -> None:
         console.print(f"  • [bold green]{profile_name}[/bold green] (User ID: {user_id})")
     console.print("")
 
+
+app.add_typer(blocklist_app, name="blocklist")
 
 if __name__ == "__main__":
     app()

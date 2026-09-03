@@ -7,7 +7,7 @@ This document traces the full lifecycle of a tidal-sync backup: how the export s
 tidal-sync treats your local disk as a faithful snapshot of a Tidal account. The export steps pull the live library down; the import steps push a snapshot back up. The round trip preserves:
 
 - Liked Songs, Liked Albums, and Followed Artists (the core static library).
-- The Blocked Artists list (export only; Tidal exposes no API to restore it, so import skips it).
+- The Blocked Artists list (no import path is implemented; Tidal does expose the unblock verb, so a future import is in scope, just not built today).
 - User-created playlists, including their V2 folder placement.
 - Algorithmic mixes and radios, captured as point-in-time snapshots under `Mixes & Radios`.
 
@@ -109,7 +109,7 @@ Routing happens in `resolve_and_import_playlist`, which inspects the file name a
 
 - `Liked Songs.csv` routes to the favourites importer.
 - `Liked Albums.csv` routes to the albums importer.
-- `Followed Artists.csv` routes to the artists importer (blocked artists are export-only and not imported).
+- `Followed Artists.csv` routes to the artists importer (blocked artists have no import path today; a future import is in scope but not built).
 - Any other file defaults to track processing. A parent directory named `Mixes & Radios` (or `Mixes and Radios`) is tagged so, and a file under a `Playlists/<folder>` tree is tagged with that folder name so it can be re-homed on import.
 
 For each file the importer:

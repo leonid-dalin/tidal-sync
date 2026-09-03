@@ -126,6 +126,27 @@ tidal-sync unblock 4894212 8107285 -p source
 
 Every verb reports one line per id so a partial run shows exactly which item failed. `block` asks you to retype the profile name before any batch above ten ids goes out; pass `--force` to skip the prompt in automation. `unblock` has no rail. See [CLI Reference](docs/cli-reference.md) for the full command list.
 
+### Filter lists
+
+`block` also accepts `--from-list NAME` (block every id in a stored subscription) and `--all-from FILE` (block every id in a one-off `txt`, `csv` or `json` file). The subscription store lives under `~/.tidal_sync/filter_lists/` and is managed by the `blocklist` sub-app:
+
+```bash
+# Subscribe to a remote or local filter list
+tidal-sync blocklist add spam-allow-1 https://example.com/blocklist.json
+tidal-sync blocklist add my-local ./my-blocklist.txt
+
+# Show what is subscribed, refetch it, or drop a name
+tidal-sync blocklist show
+tidal-sync blocklist update
+tidal-sync blocklist remove my-local
+
+# Apply the union of every subscription to the named profile
+tidal-sync blocklist apply --dry-run
+tidal-sync blocklist apply --prune --force -p target
+```
+
+Remote fetches are pinned to four caps: HTTPS only, 1 MiB per body, a Content-Type allowlist of `text/plain`, `text/csv` and `application/json`, and an explicit timeout. `apply` adds a hard ceiling of `5000` ids per run: the ceiling is checked before any write, but the live blocklist read used to compute the plan has already happened at that point, so a capped run costs one read and no writes. The same ten-id confirmation rail as `block` fires on the union; `--force` skips it for automation. See [CLI Reference](docs/cli-reference.md#blocklist) for the full command list.
+
 ## 🤝 Contributing
 
 Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for the

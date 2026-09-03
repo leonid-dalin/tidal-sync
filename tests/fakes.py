@@ -16,6 +16,35 @@ asyncio.to_thread, which never awaits a coroutine.
 import tidalapi
 
 
+def fake_subscription(
+    name: str = "kpop",
+    source: str = "https://example.test/list.txt",
+    fmt: str = "txt",
+    last_fetched: str | None = None,
+    last_count: int = 0,
+    last_error: str | None = None,
+):
+    """Build a Subscription for a test, with every field defaulted.
+
+    One definition, because two copies of this helper had already
+    disagreed on the default name and on which fields they accepted
+    within a single round of work.
+    """
+    from datetime import UTC, datetime
+
+    from tidal_sync.engine.filterlist_store import Subscription
+
+    now = datetime.now(UTC).isoformat()
+    return Subscription(
+        name=name,
+        source=source,
+        format=fmt,
+        last_fetched=last_fetched or now,
+        last_count=last_count,
+        last_error=last_error,
+    )
+
+
 def make_search_results(tracks=None, albums=None, artists=None):
     """Builds a search result shaped exactly like tidalapi.Session.search()."""
     return {

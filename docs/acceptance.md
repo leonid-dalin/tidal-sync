@@ -53,9 +53,11 @@ boundaries of what the automated suite can prove.
   path is tested, but no test drives a genuine auth failure through the
   live `get_session` path; the friendly message is proven at the
   `ValueError` boundary, not at the network boundary.
-- **Blocked artists are export-only.** Tidal exposes no API to restore
-  them, so `import_artists_async` skips them by design. This is correct,
-  not a gap, but it means item 1's round trip is one-way for that
+- **Blocked artists have no import path.** `import_artists_async` does
+  not restore them because no import path is implemented, not because
+  Tidal lacks the verb: `unblock_artists` in `curation.py` already uses
+  the working DELETE endpoint, so a future import is in scope, just not
+  built today. This means item 1's round trip is one-way for that
   category.
 - **Folder name collapse caveat.** Two distinct Tidal folders whose names
   sanitise to the same string merge into one directory on disk. This is

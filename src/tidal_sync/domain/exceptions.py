@@ -62,3 +62,11 @@ class BackupFileError(TidalSyncError):
     """Raised when a backup CSV is empty, headerless, or holds no valid rows."""
 
     pass
+
+
+class BatchTooLarge(TidalSyncError):
+    """Raised when a single write batch exceeds the safety ceiling.
+
+    A truncated block is worse than no block: the operator has no way to
+    tell which half landed. The batch is refused whole.
+    """

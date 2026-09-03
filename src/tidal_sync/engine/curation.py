@@ -33,13 +33,17 @@ import requests
 import tidalapi
 from loguru import logger
 
-from ..domain.exceptions import TidalPoisonError, TidalTransientError
+from ..domain.exceptions import BatchTooLarge, TidalPoisonError, TidalTransientError
 from ..domain.protocols import TidalUser
 from ..domain.results import UploadOutcome
 from .network import execute_network, fetch_blocked_artists_strict
 from .workers import run_headless_tasks_async
 
 _BLOCK_METHOD = Literal["POST", "DELETE"]
+
+# The largest batch we will ever push in a single block or unblock run.
+# Exceeding the cap aborts the whole run; we never write a truncated set.
+MAX_APPLY_IDS: int = 5000
 
 
 def _user(session: tidalapi.Session) -> TidalUser:
@@ -148,6 +152,17 @@ def _block_write_action(
     return _action
 
 
+def _refuse_oversized_batch(ids: list[str]) -> None:
+    """Refuse a batch over MAX_APPLY_IDS before any write goes out.
+
+    Block and unblock spend the same rate budget, so both check here.
+    """
+    if len(ids) > MAX_APPLY_IDS:
+        raise BatchTooLarge(
+            f"batch of {len(ids)} ids exceeds the {MAX_APPLY_IDS} id ceiling; nothing was written"
+        )
+
+
 async def block_artists(session: tidalapi.Session, ids: list[str]) -> UploadOutcome:
     """Blocks each artist id for the logged-in user.
 
@@ -158,6 +173,7 @@ async def block_artists(session: tidalapi.Session, ids: list[str]) -> UploadOutc
     after the read was a silent no-op, not a success, and moves to
     rejected.
     """
+    _refuse_oversized_batch(ids)
     outcome = await _apply_per_id(ids, _block_write_action(session, "POST", False), "Block artist")
     return await _reconcile_block_write(session, outcome, ids, expected_present=True)
 
@@ -172,6 +188,7 @@ async def unblock_artists(session: tidalapi.Session, ids: list[str]) -> UploadOu
     re-reading the blocklist: an id reported applied but still present
     was not removed, so it moves to rejected.
     """
+    _refuse_oversized_batch(ids)
     outcome = await _apply_per_id(
         ids, _block_write_action(session, "DELETE", True), "Unblock artist"
     )
@@ -227,15 +244,25 @@ async def _reconcile_block_write(
     )
 
 
+async def fetch_blocked_artists_named(session: tidalapi.Session) -> list[tuple[str, str]]:
+    """Lists blocked artists as ``(id, name)`` pairs.
+
+    Same strict read as ``fetch_blocked_artist_ids``; the artist objects
+    already carry names, and the unblock prompt cannot ask a useful
+    question without them. Order matches the network order.
+    """
+    artists = await execute_network(fetch_blocked_artists_strict, session)
+    return [(str(artist.id), str(getattr(artist, "name", "") or "")) for artist in artists]
+
+
 async def fetch_blocked_artist_ids(session: tidalapi.Session) -> list[str]:
     """Lists the user's blocked artists as a flat list of string ids.
 
-    Strict caller over `fetch_blocked_artists_strict`; a failed page fetch
-    propagates rather than being swallowed. The reconciliation in
-    `_reconcile_block_write` owns this invariant: a missing blocklist after
-    a block or unblock write must not be reported as "confirmed removed".
-    Order matches the network order so the caller can correlate positions
-    across runs.
+    Projection over ``fetch_blocked_artists_named``, which is the strict read;
+    a failed page fetch propagates rather than being swallowed. The
+    reconciliation in ``_reconcile_block_write`` owns this invariant: a
+    missing blocklist after a block or unblock write must not be reported as
+    "confirmed removed". Order matches the network order so the caller can
+    correlate positions across runs.
     """
-    artists = await execute_network(fetch_blocked_artists_strict, session)
-    return [str(a.id) for a in artists]
+    return [artist_id for artist_id, _name in await fetch_blocked_artists_named(session)]

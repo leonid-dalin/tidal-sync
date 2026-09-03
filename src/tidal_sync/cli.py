@@ -36,7 +36,7 @@ import typer
 
 from .auth import _get_all_profiles, get_session, secure_delete_token
 from .cli_blocklist import blocklist_app, report_store_error
-from .cli_shared import BLOCK_RAIL_THRESHOLD, _report_outcome, console
+from .cli_shared import BLOCK_RAIL_THRESHOLD, console, report_outcome
 from .domain.enums import ClearTarget, FavoriteKind
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
 from .domain.results import UploadOutcome
@@ -447,7 +447,7 @@ def _run_block_with_lists(
         console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
         raise typer.Exit(1) from e
 
-    failed = _report_outcome(outcome, "Blocked artist", "block failed")
+    failed = report_outcome(outcome, "Blocked artist", "block failed")
 
     for tid, _name in plan.already_blocked:
         console.print(f"  [cyan]Already blocked artist {tid}[/cyan]")

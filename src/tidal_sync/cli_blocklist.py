@@ -41,7 +41,7 @@ import typer
 
 from .auth import get_session
 from .cli_prompts import prompt_unblock
-from .cli_shared import BLOCK_RAIL_THRESHOLD, _report_outcome, console
+from .cli_shared import BLOCK_RAIL_THRESHOLD, console, report_outcome
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
 from .engine.filterlist import FormatError, detect_format
 from .engine.filterlist_apply import ApplyPlan, execute_apply, now_iso, plan_apply
@@ -249,8 +249,8 @@ async def _run_apply(
 
     outcome = await execute_apply(session, plan, unblock_ids=unblock_ids)
 
-    failed = _report_outcome(outcome.blocked, "Blocked artist", "block failed")
-    failed += _report_outcome(outcome.unblocked, "unblock", "unblock failed")
+    failed = report_outcome(outcome.blocked, "Blocked artist", "block failed")
+    failed += report_outcome(outcome.unblocked, "unblock", "unblock failed")
 
     if failed or plan.errors:
         raise typer.Exit(1)

@@ -35,7 +35,7 @@ console = Console()
 BLOCK_RAIL_THRESHOLD = 10
 
 
-def _report_outcome(outcome: UploadOutcome | None, applied: str, rejected: str) -> int:
+def report_outcome(outcome: UploadOutcome | None, applied: str, rejected: str) -> int:
     """Single reporter for both directions so block and unblock output cannot diverge."""
     if outcome is None:
         return 0

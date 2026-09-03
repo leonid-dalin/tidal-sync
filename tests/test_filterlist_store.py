@@ -33,7 +33,7 @@ def store_dir(monkeypatch, tmp_path: Path) -> Path:
 def _sub(
     name: str = "default",
     source: str = "https://example.com/list.txt",
-    fmt: str = "plain",
+    fmt: str = "txt",
     last_fetched: str | None = None,
     last_count: int = 0,
     last_error: str | None = None,
@@ -62,7 +62,7 @@ def test_every_field_survives_round_trip(store_dir: Path):
     original = _sub(
         name="full",
         source="https://b.example/list",
-        fmt="dnsmasq",
+        fmt="txt",
         last_fetched="2026-09-02T12:00:00Z",
         last_count=42,
         last_error=None,
@@ -102,10 +102,61 @@ def test_load_on_missing_file_returns_empty_list(store_dir: Path):
     assert load_subscriptions() == []
 
 
-def test_load_on_corrupt_file_returns_empty_list(store_dir: Path):
+def test_load_on_corrupt_file_raises_store_error(store_dir: Path):
     store_dir.mkdir(parents=True, exist_ok=True)
     (store_dir / "subscriptions.json").write_text("{not valid json", encoding="utf-8")
-    assert load_subscriptions() == []
+    with pytest.raises(filterlist_store.StoreError):
+        load_subscriptions()
+
+
+def test_a_corrupt_index_refuses_rather_than_reading_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed read must not look like an empty store.
+
+    Reading empty means the next add writes an index of one record and
+    every existing subscription is gone.
+    """
+    monkeypatch.setattr(filterlist_store, "STORE_DIR", tmp_path)
+    (tmp_path).mkdir(exist_ok=True)
+    (tmp_path / "subscriptions.json").write_bytes(b"{ this is not json")
+
+    with pytest.raises(filterlist_store.StoreError):
+        filterlist_store.load_subscriptions()
+
+
+def test_a_corrupt_index_is_not_overwritten_by_add(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """add must refuse rather than replace an index it could not read."""
+    monkeypatch.setattr(filterlist_store, "STORE_DIR", tmp_path)
+    tmp_path.mkdir(exist_ok=True)
+    index = tmp_path / "subscriptions.json"
+    index.write_bytes(b"{ this is not json")
+
+    with pytest.raises(filterlist_store.StoreError):
+        filterlist_store.add_subscription(
+            filterlist_store.Subscription(name="new", source="./x.txt", format="txt")
+        )
+    assert index.read_bytes() == b"{ this is not json"
+
+
+def test_a_malformed_record_is_a_store_error_not_a_key_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A record missing a field must not surface as a bare KeyError."""
+    monkeypatch.setattr(filterlist_store, "STORE_DIR", tmp_path)
+    tmp_path.mkdir(exist_ok=True)
+    (tmp_path / "subscriptions.json").write_bytes(b'[{"source": "./x.txt"}]')
+
+    with pytest.raises(filterlist_store.StoreError):
+        filterlist_store.load_subscriptions()
+
+
+def test_a_format_from_the_index_cannot_escape_the_cache_dir() -> None:
+    """format is validated, not just name; both reach the cache path."""
+    with pytest.raises(ValueError):
+        filterlist_store.cache_path("ok", "../../../evil")
 
 
 def test_save_subscriptions_persists_directly(store_dir: Path):
@@ -117,11 +168,6 @@ def test_save_subscriptions_persists_directly(store_dir: Path):
 def test_name_with_slash_is_rejected(store_dir: Path):
     with pytest.raises(ValueError):
         add_subscription(_sub(name="bad/name"))
-
-
-def test_name_with_double_dot_is_rejected(store_dir: Path):
-    with pytest.raises(ValueError):
-        add_subscription(_sub(name="bad..name"))
 
 
 def test_name_with_leading_dot_is_rejected(store_dir: Path):

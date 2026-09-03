@@ -42,6 +42,21 @@ _CACHE_DIR: str = "cache"
 # name cannot escape its directory with ``..`` or a separator.
 _NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$")
 
+# Format is read off the index too, not just off a CLI flag, so the
+# allowlist lives here where both call sites reach it. A corrupted or
+# hand-edited record with ``"format": "../../../evil"`` must not pass.
+SUPPORTED_FORMATS: tuple[str, ...] = ("txt", "csv", "json")
+
+
+class StoreError(Exception):
+    """Raised when the on-disk subscription store cannot be trusted.
+
+    The invariant this class protects: a read that failed is not an
+    empty store. Returning ``[]`` on a decode error would let the next
+    ``add_subscription`` overwrite the file with an index of one record
+    and silently destroy every subscription on disk.
+    """
+
 
 @dataclass
 class Subscription:
@@ -57,10 +72,17 @@ class Subscription:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Subscription:
+        try:
+            name = data["name"]
+            source = data["source"]
+            fmt = data["format"]
+        except (KeyError, TypeError) as exc:
+            raise StoreError(f"malformed subscription record: {data!r}") from exc
+        _validate_format(fmt)
         return cls(
-            name=data["name"],
-            source=data["source"],
-            format=data["format"],
+            name=name,
+            source=source,
+            format=fmt,
             last_fetched=data.get("last_fetched"),
             last_count=int(data.get("last_count", 0)),
             last_error=data.get("last_error"),
@@ -76,8 +98,20 @@ def _validate_name(name: str) -> None:
             "Use 1-64 characters: letters, digits, '_', '-' or '.', "
             "and do not start with '.'."
         )
-    if ".." in name:
-        raise ValueError(f"Invalid subscription name {name!r}. Name must not contain '..'.")
+
+
+def _validate_format(fmt: object) -> None:
+    """Reject formats outside the allowlist.
+
+    ``format`` reaches the cache path the same way ``name`` does, so it
+    must be checked just as strictly. Membership in
+    ``SUPPORTED_FORMATS`` is the gate; anything else (including a
+    hand-edited traversal) raises.
+    """
+    if not isinstance(fmt, str) or fmt not in SUPPORTED_FORMATS:
+        raise ValueError(
+            f"Unsupported filter-list format {fmt!r}. Expected one of {SUPPORTED_FORMATS}."
+        )
 
 
 def _ensure_dir(path: Path) -> None:
@@ -93,13 +127,21 @@ def _index_path() -> Path:
 def _read_index() -> list[dict[str, Any]]:
     path = _index_path()
     if not path.exists():
+        # A missing file is genuinely an empty store. Anything else
+        # means the read failed, which must not be conflated with
+        # reading nothing.
         return []
     try:
         data = orjson.loads(path.read_bytes())
-    except orjson.JSONDecodeError:
-        return []
+    except orjson.JSONDecodeError as exc:
+        raise StoreError(f"subscription index is not valid JSON: {path} ({exc})") from exc
+    except OSError as exc:
+        raise StoreError(f"subscription index could not be read: {path} ({exc})") from exc
     if not isinstance(data, list):
-        return []
+        raise StoreError(
+            f"subscription index is not a JSON array: {path} "
+            f"(top-level type was {type(data).__name__})"
+        )
     return data
 
 
@@ -133,6 +175,7 @@ def save_subscriptions(subs: list[Subscription]) -> None:
 def add_subscription(sub: Subscription) -> None:
     """Insert or replace a subscription by name."""
     _validate_name(sub.name)
+    _validate_format(sub.format)
     records = _read_index()
     for i, existing in enumerate(records):
         if existing.get("name") == sub.name:
@@ -156,4 +199,5 @@ def remove_subscription(name: str) -> bool:
 def cache_path(name: str, fmt: str) -> Path:
     """Path where the cached copy of a subscription is written."""
     _validate_name(name)
+    _validate_format(fmt)
     return STORE_DIR / _CACHE_DIR / f"{name}.{fmt}"

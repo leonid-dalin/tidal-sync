@@ -47,7 +47,7 @@ from .engine.exporter import (
 )
 from .engine.filterlist import FormatError, parse_filter_list
 from .engine.filterlist_apply import execute_apply, plan_apply
-from .engine.filterlist_store import Subscription, load_subscriptions
+from .engine.filterlist_store import StoreError, Subscription, load_subscriptions
 from .engine.importer import import_collection_from_disk
 from .engine.parser import extract_tidal_id
 from .engine.wiping import purge_target_category_async
@@ -371,9 +371,19 @@ def _resolve_block_lists(
     runs. When neither flag is given, returns an empty list so the
     positional path is the only source of ids.
     """
+    from .engine.filterlist_store import _index_path
+
     subs: list[Subscription] = []
     if from_list is not None:
-        found = [s for s in load_subscriptions() if s.name == from_list]
+        try:
+            found = [s for s in load_subscriptions() if s.name == from_list]
+        except StoreError as exc:
+            console.print(f"[bold red]Subscription store unreadable:[/bold red] {exc}")
+            console.print(
+                f"  [dim]store path: {_index_path()}[/dim]\n"
+                "  [dim]fix or delete subscriptions.json, then retry.[/dim]"
+            )
+            raise typer.Exit(1) from exc
         if not found:
             console.print(f"[bold red]No such subscription:[/bold red] {from_list}")
             raise typer.Exit(1)

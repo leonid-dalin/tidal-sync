@@ -46,6 +46,7 @@ from .engine.filterlist import FormatError
 from .engine.filterlist_apply import ApplyPlan, execute_apply, plan_apply
 from .engine.filterlist_fetch import FetchError, fetch_source
 from .engine.filterlist_store import (
+    StoreError,
     Subscription,
     add_subscription,
     cache_path,
@@ -61,6 +62,19 @@ blocklist_app = typer.Typer(
 
 
 _SUPPORTED_FORMATS: tuple[str, ...] = ("txt", "csv", "json")
+
+
+def _report_store_error(exc: StoreError) -> None:
+    """Print the standard unreadable-store message and exit 1."""
+    from .cli import console
+    from .engine.filterlist_store import _index_path
+
+    console.print(f"[bold red]Subscription store unreadable:[/bold red] {exc}")
+    console.print(
+        f"  [dim]store path: {_index_path()}[/dim]\n"
+        "  [dim]fix or delete subscriptions.json, then retry.[/dim]"
+    )
+    raise typer.Exit(1) from exc
 
 
 def _detect_format(source: str) -> str:
@@ -185,7 +199,11 @@ def update(
     """Refetch one or every subscription and record per-subscription errors."""
     from .cli import console
 
-    subs = load_subscriptions()
+    try:
+        subs = load_subscriptions()
+    except StoreError as exc:
+        _report_store_error(exc)
+        return  # _report_store_error raises; the return keeps mypy quiet
     if name is not None:
         subs = [s for s in subs if s.name]
         if not subs:
@@ -224,7 +242,12 @@ def show(
     ] = "default",
 ) -> None:
     """Print every subscription with its source, format and last fetch state."""
-    _format_table(load_subscriptions())
+    try:
+        rows = load_subscriptions()
+    except StoreError as exc:
+        _report_store_error(exc)
+        return  # _report_store_error raises; the return keeps mypy quiet
+    _format_table(rows)
 
 
 async def _run_apply(
@@ -332,7 +355,11 @@ def apply(
     """
     from .cli import console, get_session
 
-    subs = load_subscriptions()
+    try:
+        subs = load_subscriptions()
+    except StoreError as exc:
+        _report_store_error(exc)
+        return  # _report_store_error raises; the return keeps mypy quiet
     if not subs:
         console.print("[yellow]No subscriptions. Use 'tidal-sync blocklist add' first.[/yellow]")
         return

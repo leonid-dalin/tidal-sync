@@ -112,31 +112,26 @@ def test_a_capped_list_blocks_no_positional_leftover(
         filterlist_store.Subscription(name="huge", source=str(source), format="txt")
     )
 
-    blocked_calls: list[int] = []
+    written: list[list[str]] = []
 
-    async def _block(session: object, ids: list[str]) -> UploadOutcome:
-        from tidal_sync.domain.exceptions import BatchTooLarge
-
-        # The guard sits at the top of block_artists; the stub
-        # mirrors that, refusing the batch whole before any per-id
-        # work. ``blocked_calls`` records that the guard fired.
-        blocked_calls.append(len(ids))
-        raise BatchTooLarge(f"batch of {len(ids)} ids exceeds the 5000 id ceiling")
+    async def _apply_per_id(ids: list[str], action: object, label: str) -> UploadOutcome:
+        written.append(list(ids))
+        return UploadOutcome(applied=list(ids), rejected=[])
 
     async def _named(session: object) -> list[tuple[str, str]]:
         return []
 
-    monkeypatch.setattr(filterlist_apply, "block_artists", _block)
+    # Fake the per-id layer only, so the real guard in block_artists
+    # runs here. A stub raising BatchTooLarge would pass with the
+    # guard deleted.
+    monkeypatch.setattr(curation, "_apply_per_id", _apply_per_id)
     monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _named)
-    monkeypatch.setattr(curation, "block_artists", _block)
     monkeypatch.setattr(cli_module, "get_session", lambda profile: object())
 
     result = runner.invoke(app, ["block", "--from-list", "huge", "777", "--force"])
 
     assert result.exit_code == 1
-    # The guard fired exactly once on the full batch and refused it;
-    # no per-id work followed.
-    assert blocked_calls == [5002]
+    assert written == [], f"the ceiling must refuse the batch before any write, got {written}"
     assert "Blocked artist 777" not in result.output
     assert "5000" in result.output
 

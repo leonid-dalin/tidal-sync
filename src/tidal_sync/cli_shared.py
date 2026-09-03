@@ -18,8 +18,8 @@
 
 ``console`` and the rail threshold live here rather than in ``cli.py``
 because ``cli_blocklist`` needs both and ``cli`` imports
-``cli_blocklist``. Without this module the cycle is broken by importing
-a private name from ``cli`` inside six function bodies.
+``cli_blocklist``. Before this module existed the cycle was broken by
+importing a private name from ``cli`` inside six function bodies.
 """
 
 from __future__ import annotations

@@ -40,6 +40,14 @@ from .parser import extract_tidal_id, parse_csv_text
 SUPPORTED_FORMATS: tuple[str, ...] = ("txt", "csv", "json")
 
 
+class FormatError(Exception):
+    """Raised when a filter list cannot be parsed.
+
+    The txt path attaches the offending line number; json and dispatch
+    failures do not need one.
+    """
+
+
 def detect_format(source: str) -> str:
     """Read the filter-list format off a URL or path extension.
 
@@ -56,14 +64,6 @@ def detect_format(source: str) -> str:
             f"expected one of {', '.join(SUPPORTED_FORMATS)}"
         )
     return suffix
-
-
-class FormatError(Exception):
-    """Raised when a filter list cannot be parsed.
-
-    The txt path attaches the offending line number; json and dispatch
-    failures do not need one.
-    """
 
 
 def _validated_id(raw: str, where: str) -> str:

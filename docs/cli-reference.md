@@ -409,7 +409,7 @@ Source fetching is governed by four non-negotiable caps, each pinned by a test:
 
 `apply` adds a fifth cap: a hard ceiling of `5000` ids per apply run. The ceiling is checked before any write, but the live blocklist read used to compute the plan has already happened at that point, so a capped run costs one read and no writes.
 
-The ten-id confirmation rail from `block` carries over to `blocklist apply`: when the resolved union exceeds ten ids and `--force` is absent, the CLI asks the operator to retype the profile name and a mismatched answer aborts before any Tidal call. The rail is skipped under `--force`.
+The ten-id confirmation rail from `block` carries over to `blocklist apply`: when the resolved union exceeds ten ids and `--force` is absent, the CLI asks the operator to retype the profile name and a mismatched answer aborts before any Tidal write. The rail is skipped under `--force`.
 
 **Subcommands**
 

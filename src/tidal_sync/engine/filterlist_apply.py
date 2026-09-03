@@ -124,12 +124,12 @@ async def plan_apply(
 ) -> ApplyPlan:
     """Compute the apply plan from subscriptions and the live blocklist.
 
-    Pure: the only network read is the live blocklist, and no Tidal
-    write is ever issued from here. The cap, the ``block_artists``
-    call and the ``unblock_artists`` call live in
-    ``execute_apply``. Splitting them keeps the rail in the CLI
-    honest: there is no path through the engine that bypasses the
-    CLI's confirmation prompt.
+    Issues no Tidal write. It reads the live blocklist and may fetch
+    stale subscription sources over HTTP. Every mutation, including
+    the cap, the ``block_artists`` call and the ``unblock_artists``
+    call, lives in ``execute_apply``. Splitting them keeps the rail in
+    the CLI honest: there is no path through the engine that bypasses
+    the CLI's confirmation prompt.
     """
     now_iso = _now_iso()
 

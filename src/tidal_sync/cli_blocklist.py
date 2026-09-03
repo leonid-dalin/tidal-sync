@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 from typing import Annotated, NoReturn
 
+import tidalapi
 import typer
 
 from .auth import get_session
@@ -224,7 +225,7 @@ def show() -> None:
 
 async def _run_apply(
     *,
-    session,
+    session: tidalapi.Session,
     profile: str,
     subs: list[Subscription],
     dry_run: bool,
@@ -244,7 +245,7 @@ async def _run_apply(
     if dry_run:
         return
 
-    if plan.to_block and not force and len(plan.to_block) > BLOCK_RAIL_THRESHOLD:
+    if not force and len(plan.to_block) > BLOCK_RAIL_THRESHOLD:
         typed = typer.prompt(f"Type '{profile}' to confirm blocking {len(plan.to_block)} artists")
         if typed != profile:
             console.print("[red]Confirmation did not match. Aborting.[/red]")

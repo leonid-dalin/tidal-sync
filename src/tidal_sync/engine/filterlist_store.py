@@ -165,6 +165,7 @@ def save_subscriptions(subs: list[Subscription]) -> None:
     """Persist the given list, replacing whatever was on disk."""
     for sub in subs:
         _validate_name(sub.name)
+        _validate_format(sub.format)
     _write_index([asdict(sub) for sub in subs])
 
 

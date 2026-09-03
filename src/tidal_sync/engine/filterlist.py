@@ -120,8 +120,14 @@ def _parse_json(data: bytes) -> list[tuple[str, str]]:
 
     A top-level dict or scalar parses with orjson but is not a list of
     references, so it is rejected here rather than silently coerced.
+    orjson decode failures are wrapped as ``FormatError`` so the
+    module's contract ("FormatError raised at parse time") holds for
+    every input shape, including malformed bytes.
     """
-    decoded = orjson.loads(data)
+    try:
+        decoded = orjson.loads(data)
+    except orjson.JSONDecodeError as exc:
+        raise FormatError(f"json decode failed: {exc}") from exc
     if not isinstance(decoded, list):
         kind = type(decoded).__name__
         raise FormatError(f"json filter list must be a top-level array, got {kind}")

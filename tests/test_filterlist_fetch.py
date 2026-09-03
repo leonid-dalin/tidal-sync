@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from tidal_sync.engine import filterlist_fetch
+from tidal_sync.engine.filterlist import FormatError
 from tidal_sync.engine.filterlist_fetch import FetchError, fetch_source
 
 # ---------------------------------------------------------------------------
@@ -365,4 +366,69 @@ def test_size_cap_aborts_before_buffering_the_full_body(
     dest = tmp_path / "out.txt"
     with pytest.raises(FetchError):
         fetch_source("https://example.com/list", "txt", dest)
+    assert not dest.exists()
+
+
+# ---------------------------------------------------------------------------
+# Redirect refusal (HTTPS cap survives a 3xx)
+# ---------------------------------------------------------------------------
+
+
+def test_redirect_to_http_is_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The HTTPS cap must survive a redirect, not just the typed URL."""
+    captured: dict[str, Any] = {}
+
+    class _Response:
+        status_code = 302
+        headers = {"Location": "http://evil.example/list.txt", "Content-Type": "text/plain"}
+
+        def iter_content(self, chunk_size: int) -> Any:
+            return iter([b"4894212\n"])
+
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(self, *_: Any) -> None:
+            return None
+
+    def _get(url: str, **kwargs: Any) -> _Response:
+        captured.update(kwargs)
+        return _Response()
+
+    monkeypatch.setattr(filterlist_fetch.requests, "get", _get)
+
+    with pytest.raises(FetchError):
+        filterlist_fetch.fetch_source("https://ok.example/list.txt", "txt", tmp_path / "c.txt")
+    assert captured.get("allow_redirects") is False, "redirects must not be followed silently"
+
+
+# ---------------------------------------------------------------------------
+# Local branch must use the same size cap
+# ---------------------------------------------------------------------------
+
+
+def test_local_source_over_the_cap_is_refused(tmp_path: Path) -> None:
+    """A local file gets the same 1 MiB ceiling a fetched one does."""
+    source = tmp_path / "big.txt"
+    source.write_bytes(b"4894212\n" * 200_000)
+
+    with pytest.raises(FetchError):
+        filterlist_fetch.fetch_source(str(source), "txt", tmp_path / "c.txt")
+
+
+# ---------------------------------------------------------------------------
+# A malformed body must not be left in the cache for the next run
+# ---------------------------------------------------------------------------
+
+
+def test_a_malformed_body_leaves_no_cache_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A body that will not parse must not be cached for the next run."""
+    source = tmp_path / "bad.json"
+    source.write_bytes(b"not json")
+    dest = tmp_path / "cache" / "bad.json"
+
+    with pytest.raises(FormatError):
+        filterlist_fetch.fetch_source(str(source), "json", dest)
     assert not dest.exists()

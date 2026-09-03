@@ -54,13 +54,25 @@ class Favorites(Protocol):
     def remove_album(self, item_id: str) -> bool: ...
 
 
+class TidalFavorites(Favorites, Protocol):
+    """The subset of tidalapi's favourites surface the exporter fetches as a list.
+
+    Extends :class:`Favorites` with the algorithmic mixes and radios lists the
+    exporter pulls in one round-trip each. tidalapi varies this surface
+    across versions, so callers gate with ``hasattr`` before fetching.
+    """
+
+    def mixes(self) -> list[Any]: ...
+    def radios(self) -> list[Any]: ...
+
+
 class TidalUser(Protocol):
     """The subset of tidalapi's logged-in user the engine depends on."""
 
     id: int
 
     @property
-    def favorites(self) -> Favorites: ...
+    def favorites(self) -> TidalFavorites: ...
 
     @property
     def playlists(self) -> Any: ...

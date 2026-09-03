@@ -227,23 +227,18 @@ async def export_algorithmic_mixes_to_disk(session: tidalapi.Session, base_dir: 
 
         if hasattr(user, "favorites"):
             if hasattr(user.favorites, "mixes"):
-                mixes_func = user.favorites.mixes
-                mixes = await execute_network(mixes_func) if callable(mixes_func) else mixes_func
+                mixes = await execute_network(user.favorites.mixes)
                 if isinstance(mixes, list):
                     all_stations.extend(mixes)
 
             if hasattr(user.favorites, "radios"):
-                radios_func = user.favorites.radios
-                radios = (
-                    await execute_network(radios_func) if callable(radios_func) else radios_func
-                )
+                radios = await execute_network(user.favorites.radios)
                 if isinstance(radios, list):
                     all_stations.extend(radios)
 
         if not all_stations and hasattr(session, "mixes"):
             mixes_func = session.mixes
-            # TODO(f-21): re-enable redundant-expr after inner helpers are typed
-            mixes = await execute_network(mixes_func) if callable(mixes_func) else mixes_func
+            mixes = await execute_network(mixes_func)
             if isinstance(mixes, list):
                 all_stations.extend(mixes)
 

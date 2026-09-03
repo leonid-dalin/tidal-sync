@@ -26,15 +26,26 @@ makes that ownership safe is the four-cap envelope below.
 
 Caps, all non-negotiable and each pinned by a test:
 
-1. HTTPS only. ``http://`` is refused without retry.
+1. HTTPS only. ``http://`` is refused without retry, and 3xx
+   responses are refused on the same basis: a redirect can move an
+   ``https://`` source to ``http://`` or to an internal address, so
+   following one silently would off both this cap and the destination
+   check we do not yet perform.
 2. 1 MiB per fetch. Streamed; abort the moment the running total
    exceeds the cap rather than buffering the whole body first.
+   The local-path branch enforces the same ceiling.
 3. Content-Type allowlist: ``text/plain``, ``text/csv``,
    ``application/json``. Comparison ignores any ``;charset=...``
    parameter and folds case. A missing header is a refusal: we never
    accept a response whose type we cannot verify.
 4. An explicit timeout. A hung fetch raises ``FetchError`` rather
    than hanging the CLI.
+
+Known gap: the destination address is not restricted, so a subscription
+pointed at a private or link-local address will be fetched. The operator
+chooses the subscription, so this is their trust decision, but the caps
+above do not make it safe. Restricting the resolved address is tracked
+separately.
 """
 
 from __future__ import annotations
@@ -78,11 +89,6 @@ def _is_local_file(source: str) -> bool:
         return False
 
 
-def _read_local(source: str) -> bytes:
-    """Read a local file. The brief requires no network call here."""
-    return Path(source).read_bytes()
-
-
 def _normalise_content_type(raw: str | None) -> str | None:
     """Return the media-type half of a Content-Type header, lowercased.
 
@@ -106,30 +112,43 @@ def _check_content_type(raw: str | None) -> str:
     return normalised
 
 
-def _stream_to_dest(response: requests.Response, dest: Path) -> None:
-    """Stream ``response`` into ``dest`` under the size cap.
+def _write_atomically(data: bytes, dest: Path) -> None:
+    """Write ``data`` to ``dest`` via a ``.part`` sibling and rename.
 
-    Writes to a ``.part`` sibling and renames atomically on success,
-    so a cap abort leaves no half-written ``dest`` on disk. The
-    running total is checked per chunk so an oversized body is
-    rejected without ever buffering it all.
+    Both the URL branch and the local branch share this so a parse
+    failure on the parent call leaves no half-written ``dest`` on
+    disk and a cap-trip leaves no ``.part`` behind either.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
     try:
-        running = 0
         with open(part, "wb") as out:
-            for chunk in response.iter_content(chunk_size=_CHUNK):
-                if not chunk:
-                    continue
-                running += len(chunk)
-                if running > _MAX_BYTES:
-                    raise FetchError("Refused fetch: body exceeds 1 MiB cap")
-                out.write(chunk)
+            out.write(data)
         os.replace(part, dest)
     except BaseException:
         part.unlink(missing_ok=True)
         raise
+
+
+def _stream_to_bytes(response: requests.Response) -> bytes:
+    """Stream ``response`` into memory under the size cap.
+
+    Raises ``FetchError`` the moment the running total exceeds the
+    cap, so an oversized body is rejected without ever buffering it
+    all. The bytes are returned for the caller to parse and only
+    then commit to ``dest``: a parse failure must not leave the
+    malformed body sitting in the cache for the next run.
+    """
+    chunks: list[bytes] = []
+    running = 0
+    for chunk in response.iter_content(chunk_size=_CHUNK):
+        if not chunk:
+            continue
+        running += len(chunk)
+        if running > _MAX_BYTES:
+            raise FetchError("Refused fetch: body exceeds 1 MiB cap")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def fetch_source(source: str, fmt: str, dest: Path) -> int:
@@ -140,6 +159,11 @@ def fetch_source(source: str, fmt: str, dest: Path) -> int:
     content-type caps, writes the body to ``dest``, parses it through
     ``parse_filter_list`` and returns the id count.
 
+    The body is parsed before it is committed to ``dest``: a parse
+    failure must not leave the malformed body sitting in the cache
+    for the next run. Both branches use an atomic ``.part`` write
+    so a cap abort leaves no half-written file behind.
+
     Network traffic here uses plain ``requests``. It deliberately does
     NOT go through the Tidal network gate (see module docstring).
     """
@@ -148,28 +172,44 @@ def fetch_source(source: str, fmt: str, dest: Path) -> int:
     # ``urlparse``, so we cannot rely on that to distinguish them;
     # the filesystem is the source of truth for "is this a path?".
     if _is_local_file(source):
-        data = _read_local(source)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(data)
-        return len(parse_filter_list(data, fmt))
+        size = Path(source).stat().st_size
+        if size > _MAX_BYTES:
+            raise FetchError(f"Refused source: {size} bytes exceeds the 1 MiB cap")
+        data = Path(source).read_bytes()
+        parsed = parse_filter_list(data, fmt)
+        _write_atomically(data, dest)
+        return len(parsed)
 
-    parsed = urlparse(source)
-    if parsed.scheme != "https":
+    parsed_url = urlparse(source)
+    if parsed_url.scheme != "https":
         # Do not upgrade the scheme. http:// is refused outright.
-        raise FetchError(f"Refused non-HTTPS source: {parsed.scheme}://")
+        raise FetchError(f"Refused non-HTTPS source: {parsed_url.scheme}://")
 
     try:
-        with requests.get(source, stream=True, timeout=_TIMEOUT) as response:
+        # Redirects are refused, not followed: a 302 to ``http://`` or
+        # to an internal endpoint would off both the HTTPS cap and the
+        # destination-address check we do not yet perform.
+        with requests.get(source, stream=True, timeout=_TIMEOUT, allow_redirects=False) as response:
+            if 300 <= response.status_code < 400:
+                # A redirect can move an https:// source to http:// or
+                # to an internal address, and the scheme check only
+                # saw the typed URL. Refuse rather than re-validate a
+                # chain we do not own.
+                raise FetchError(
+                    f"Refused redirect to {response.headers.get('Location')!r}; "
+                    "point the subscription at the final URL"
+                )
             if response.status_code != 200:
                 raise FetchError(f"Fetch failed: HTTP {response.status_code}")
 
             _check_content_type(response.headers.get("Content-Type"))
 
-            _stream_to_dest(response, dest)
+            data = _stream_to_bytes(response)
     except requests.exceptions.Timeout as exc:
         raise FetchError(f"Fetch timed out after {_TIMEOUT}s") from exc
     except requests.exceptions.ConnectionError as exc:
         raise FetchError(f"Fetch connection error: {exc}") from exc
 
-    data = dest.read_bytes()
-    return len(parse_filter_list(data, fmt))
+    parsed_list = parse_filter_list(data, fmt)
+    _write_atomically(data, dest)
+    return len(parsed_list)

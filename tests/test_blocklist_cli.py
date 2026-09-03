@@ -2,9 +2,9 @@
 
 Engine tests in test_filterlist_apply.py prove plan_apply returns the
 right ApplyPlan; these tests prove the CLI mounts the sub-app, accepts
---profile on every subcommand, refuses an unsupported extension at add
-time, leaves the account untouched under --dry-run, and skips the
-unblock prompt under --force.
+--profile only on apply, refuses an unsupported extension at add time,
+leaves the account untouched under --dry-run, and skips the unblock
+prompt under --force.
 
 Network is monkeypatched at the filterlist_fetch layer, so a test
 never resolves a URL or reads a file from disk.
@@ -29,10 +29,14 @@ from tidal_sync.engine.filterlist_store import Subscription
 runner = CliRunner()
 
 _BLOCKLIST_SUBCOMMANDS = ("add", "remove", "update", "show", "apply")
-# ``show`` and ``remove`` no longer accept --profile (Task 13):
-# they touch no account, so the option is gone rather than silently
-# accepted. The other three keep it for parity.
-_BLOCKLIST_SUBCOMMANDS_WITH_PROFILE = ("add", "update", "apply")
+# ``apply`` is the only blocklist subcommand that touches an account,
+# so it is the only one that carries ``--profile``. The other four
+# manage the local subscription store, which is global to the machine.
+_BLOCKLIST_SUBCOMMAND_WITH_PROFILE = ("apply",)
+# Inverse: every subcommand whose surface must reject ``--profile``.
+# Used by the rejection test so a regression that re-adds the flag
+# fails the build.
+_BLOCKLIST_SUBCOMMANDS_WITHOUT_PROFILE = ("add", "update", "remove", "show")
 
 
 class _FakeUser:
@@ -69,9 +73,10 @@ def test_blocklist_subcommand_help_works(subcommand: str) -> None:
     assert "Usage:" in result.output
 
 
-# Test 2: --profile / -p is accepted by every subcommand that touches
-# an account. ``show`` and ``remove`` drop the option (Task 13).
-@pytest.mark.parametrize("subcommand", _BLOCKLIST_SUBCOMMANDS_WITH_PROFILE)
+# Test 2: --profile / -p is accepted only on apply. The other four
+# subcommands manage the local subscription store and do not touch
+# an account, so the flag is gone rather than silently accepted.
+@pytest.mark.parametrize("subcommand", _BLOCKLIST_SUBCOMMAND_WITH_PROFILE)
 def test_blocklist_subcommand_accepts_profile_flag_long(
     monkeypatch: pytest.MonkeyPatch, subcommand: str
 ) -> None:
@@ -105,7 +110,7 @@ def test_blocklist_subcommand_accepts_profile_flag_long(
     assert "--profile" not in result.output or "Usage" in result.output
 
 
-@pytest.mark.parametrize("subcommand", _BLOCKLIST_SUBCOMMANDS_WITH_PROFILE)
+@pytest.mark.parametrize("subcommand", _BLOCKLIST_SUBCOMMAND_WITH_PROFILE)
 def test_blocklist_subcommand_accepts_profile_flag_short(
     monkeypatch: pytest.MonkeyPatch, subcommand: str
 ) -> None:
@@ -532,26 +537,30 @@ def test_blocklist_remove_and_show_round_trip_after_fixed_add(
 
 
 # ---------------------------------------------------------------------------
-# Task 13: ``show`` and ``remove`` no longer accept --profile.
+# Task 13 + Task 5: --profile is gone from every blocklist subcommand
+# that does not touch an account.
 #
 # Background: --profile was accepted-and-ignored on every blocklist
-# subcommand. The maintainer's call is to drop it from the two that
-# touch no account at all (``show`` and ``remove``); ``add``,
-# ``update`` and ``apply`` keep it for parity while the surface
-# still mentions accounts in their docstrings. Drop the option
-# outright, do not merely relabel it.
+# subcommand. The maintainer's call is to drop it from the four that
+# touch no account (``add``, ``update``, ``show`` and ``remove``);
+# ``apply`` keeps it because it is the only subcommand that
+# interacts with the Tidal API. The local subscription store is
+# global to the machine, so the account flag has nothing to choose.
+# Drop the option outright, do not merely relabel it.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("subcommand", ("show", "remove"))
-def test_blocklist_show_and_remove_reject_profile_flag(
+@pytest.mark.parametrize("subcommand", _BLOCKLIST_SUBCOMMANDS_WITHOUT_PROFILE)
+def test_blocklist_subcommand_rejects_profile_flag(
     monkeypatch: pytest.MonkeyPatch, subcommand: str
 ) -> None:
-    """``--profile`` on ``show`` and ``remove`` must surface as ``no such option``.
+    """``--profile`` on the non-apply subcommands must surface as a usage error.
 
-    The two subcommands touch no account, so the flag is gone rather
-    than silently accepted. ``add``, ``update`` and ``apply`` still
-    take it for parity, so they are not in this parametrize list.
+    The pin here is the exit code and the error message, not just the
+    output text: a regression that re-adds the flag in a way Typer
+    silently accepts (e.g. an undeclared option that falls through to
+    an empty parser) would still fail because the command would exit
+    zero on what is otherwise a malformed invocation.
     """
     monkeypatch.setattr(cli_blocklist, "load_subscriptions", lambda: [])
     monkeypatch.setattr(cli_blocklist, "remove_subscription", lambda name: True)
@@ -559,11 +568,47 @@ def test_blocklist_show_and_remove_reject_profile_flag(
     args: list[str] = ["blocklist", subcommand, "--profile", "second"]
     if subcommand == "remove":
         args += ["spam"]
+    if subcommand == "add":
+        args += ["spam", "https://example.test/list.txt"]
 
     result = runner.invoke(app, args)
 
-    assert "no such option" in result.output.lower() or result.exit_code == 2, (
-        f"--profile must not be accepted on blocklist {subcommand}, got: {result.output}"
+    assert result.exit_code == 2, (
+        f"--profile must make blocklist {subcommand} exit 2 (usage error), "
+        f"got exit_code={result.exit_code} output={result.output!r}"
+    )
+    assert "no such option" in result.output.lower(), (
+        f"--profile on blocklist {subcommand} must report 'no such option', got: {result.output!r}"
+    )
+
+
+@pytest.mark.parametrize("subcommand", _BLOCKLIST_SUBCOMMANDS_WITHOUT_PROFILE)
+def test_blocklist_subcommand_rejects_profile_flag_short_form(
+    monkeypatch: pytest.MonkeyPatch, subcommand: str
+) -> None:
+    """The ``-p`` short form must also be rejected.
+
+    Typer accepts long and short forms separately, so the long-form
+    pin above is not enough to catch a regression that re-adds the
+    flag under one form but not the other.
+    """
+    monkeypatch.setattr(cli_blocklist, "load_subscriptions", lambda: [])
+    monkeypatch.setattr(cli_blocklist, "remove_subscription", lambda name: True)
+
+    args: list[str] = ["blocklist", subcommand, "-p", "second"]
+    if subcommand == "remove":
+        args += ["spam"]
+    if subcommand == "add":
+        args += ["spam", "https://example.test/list.txt"]
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 2, (
+        f"-p must make blocklist {subcommand} exit 2 (usage error), "
+        f"got exit_code={result.exit_code} output={result.output!r}"
+    )
+    assert "no such option" in result.output.lower(), (
+        f"-p on blocklist {subcommand} must report 'no such option', got: {result.output!r}"
     )
 
 

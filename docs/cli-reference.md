@@ -413,15 +413,15 @@ The ten-id confirmation rail from `block` carries over to `blocklist apply`: whe
 
 **Subcommands**
 
-* `blocklist add <name> <source>`: subscribe to a filter list, validating the format before persisting. Performs the same fetch `update` would, so an unsupported extension is rejected at add time and a bad subscription never reaches `apply`. Records `last_count`, `last_fetched` and the cache file so `show` reflects the subscription truthfully.
-* `blocklist remove <name>`: drop a subscription by name. Exits 1 with `No such subscription: <name>` if the name is not in the store.
-* `blocklist update [name]`: refetch one or every subscription and record per-subscription errors. Omit `name` to update every subscription. An unknown `name` exits 1 with `No such subscription: <name>` and no other subscription is touched. If a subscription fails to fetch, the error is recorded against that subscription and printed next to its name, the other subscriptions are still updated, and the command exits 1.
+* `blocklist add <name> <source>`: subscribe to a filter list, validating the format before persisting. Performs the same fetch `update` would, so an unsupported extension is rejected at add time and a bad subscription never reaches `apply`. Records `last_count`, `last_fetched` and the cache file so `show` reflects the subscription truthfully. This subcommand has no options.
+* `blocklist remove <name>`: drop a subscription by name. Exits 1 with `No such subscription: <name>` if the name is not in the store. This subcommand has no options.
+* `blocklist update [name]`: refetch one or every subscription and record per-subscription errors. Omit `name` to update every subscription. An unknown `name` exits 1 with `No such subscription: <name>` and no other subscription is touched. If a subscription fails to fetch, the error is recorded against that subscription and printed next to its name, the other subscriptions are still updated, and the command exits 1. This subcommand has no options.
 * `blocklist show`: print every subscription with its source, format and last fetch state. This subcommand has no options.
-* `blocklist apply [--dry-run] [--prune] [--force]`: apply the union of every subscription to the named profile. Fetches stale subscriptions, parses cached ones, partitions against the live blocklist, and (unless `--dry-run`) blocks the missing set. `--prune` extends the destructive reach to artists on the live blocklist named by no subscription; the unblock prompt is the CLI's interactive path and is skipped under `--force`. The unblock prompt labels each artist as `Name (id)` with the name first so an operator scans names, not ids.
+* `blocklist apply [--profile NAME] [-p NAME] [--dry-run] [--prune] [--force]`: apply the union of every subscription to the named profile. `--profile` chooses the Tidal account; the default is `default`. Fetches stale subscriptions, parses cached ones, partitions against the live blocklist, and (unless `--dry-run`) blocks the missing set. `--prune` extends the destructive reach to artists on the live blocklist named by no subscription; the unblock prompt is the CLI's interactive path and is skipped under `--force`. The unblock prompt labels each artist as `Name (id)` with the name first so an operator scans names, not ids.
 
-**Common options on the subcommands**
+**Options on `apply`**
 
-* `--profile`, `-p` NAME: Which account profile to operate on. Default: `default`. The `add` and `update` subcommands accept it for parity; only `apply` actually uses it to choose the account. `remove` and `show` do not accept `--profile`.
+* `--profile`, `-p` NAME: Which account profile to apply on. Default: `default`. This is the only subcommand that takes `--profile`; the others manage the local subscription store, which is global to the machine, and do not need an account.
 
 **Examples**
 ```bash

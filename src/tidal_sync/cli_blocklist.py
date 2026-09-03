@@ -119,9 +119,6 @@ def _print_plan(plan: ApplyPlan) -> None:
 def add(
     name: Annotated[str, typer.Argument(help="Subscription name")],
     source: Annotated[str, typer.Argument(help="HTTPS URL or local path")],
-    profile: Annotated[
-        str, typer.Option("--profile", "-p", help="Profile name (accepted for parity)")
-    ] = "default",
 ) -> None:
     """Subscribe to a filter list, validating the format before persisting.
 
@@ -175,9 +172,6 @@ def update(
         str | None,
         typer.Argument(help="Name to update, or omit for every subscription"),
     ] = None,
-    profile: Annotated[
-        str, typer.Option("--profile", "-p", help="Profile name (accepted for parity)")
-    ] = "default",
 ) -> None:
     """Refetch one or every subscription and record per-subscription errors."""
     try:

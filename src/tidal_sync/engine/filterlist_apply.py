@@ -219,11 +219,8 @@ async def execute_apply(
     instead of a comment: there is no value of any argument that makes it
     choose.
     """
-    # Both batches are known before either write, so refuse the whole plan
-    # here. The leaf guards fire per verb, which is one guard too late for
-    # the only caller that issues two batches: the unblock guard would run
-    # after the block batch had already gone out, contradicting the
-    # exception's promise that nothing was written.
+    # Check both batches here, before either write. The leaf guards fire
+    # per verb, so the unblock one would run after the block batch landed.
     _refuse_oversized_batch([pair[0] for pair in plan.to_block])
     _refuse_oversized_batch(unblock_ids)
 

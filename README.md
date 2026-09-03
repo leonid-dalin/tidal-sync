@@ -145,7 +145,7 @@ tidal-sync blocklist apply --dry-run
 tidal-sync blocklist apply --prune --force -p target
 ```
 
-Remote fetches are pinned to four caps: HTTPS only, 1 MiB per body, a Content-Type allowlist of `text/plain`, `text/csv` and `application/json`, and an explicit timeout. `apply` adds a hard ceiling of `5000` ids per run, so a subscription union that would push a write above that limit is reported as an error and no Tidal call goes out. The same ten-id confirmation rail as `block` fires on the union; `--force` skips it for automation. See [CLI Reference](docs/cli-reference.md#blocklist) for the full command list.
+Remote fetches are pinned to four caps: HTTPS only, 1 MiB per body, a Content-Type allowlist of `text/plain`, `text/csv` and `application/json`, and an explicit timeout. `apply` adds a hard ceiling of `5000` ids per run: the ceiling is checked before any write, but the live blocklist read used to compute the plan has already happened at that point, so a capped run costs one read and no writes. The same ten-id confirmation rail as `block` fires on the union; `--force` skips it for automation. See [CLI Reference](docs/cli-reference.md#blocklist) for the full command list.
 
 ## 🤝 Contributing
 

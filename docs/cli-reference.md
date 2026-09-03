@@ -398,6 +398,8 @@ Manages filter-list subscriptions and applies them to your Tidal blocklist. A su
 
 Subscription names follow the same discipline as profile names: one to 64 characters, starting with a letter, digit or underscore, then letters, digits, underscores, dashes or dots, and never containing `..`. Names that break the rule exit 1 before any file is touched.
 
+If `subscriptions.json` is missing, malformed or otherwise unreadable, the CLI prints `Subscription store unreadable: <detail>` together with the store path and a hint to fix or delete `subscriptions.json` and retry, then exits 1. The store is never silently read as empty.
+
 Source fetching is governed by four non-negotiable caps, each pinned by a test:
 
 * HTTPS only. An `http://` URL is refused without retry.
@@ -405,7 +407,7 @@ Source fetching is governed by four non-negotiable caps, each pinned by a test:
 * Content-Type allowlist: `text/plain`, `text/csv`, `application/json`. Comparison ignores any `;charset=...` parameter and folds case. A missing header is a refusal.
 * An explicit timeout. A hung fetch raises `FetchError` rather than hanging the CLI.
 
-`apply` adds a fifth cap: a hard ceiling of `5000` ids per apply run. A subscription union that would push the live write above this limit is reported as an error and no write goes out, so a truncated block is never left half-done on the account.
+`apply` adds a fifth cap: a hard ceiling of `5000` ids per apply run. The ceiling is checked before any write, but the live blocklist read used to compute the plan has already happened at that point, so a capped run costs one read and no writes.
 
 The ten-id confirmation rail from `block` carries over to `blocklist apply`: when the resolved union exceeds ten ids and `--force` is absent, the CLI asks the operator to retype the profile name and a mismatched answer aborts before any Tidal call. The rail is skipped under `--force`.
 
@@ -413,13 +415,13 @@ The ten-id confirmation rail from `block` carries over to `blocklist apply`: whe
 
 * `blocklist add <name> <source>`: subscribe to a filter list, validating the format before persisting. Performs the same fetch `update` would, so an unsupported extension is rejected at add time and a bad subscription never reaches `apply`. Records `last_count`, `last_fetched` and the cache file so `show` reflects the subscription truthfully.
 * `blocklist remove <name>`: drop a subscription by name. Exits 1 with `No such subscription: <name>` if the name is not in the store.
-* `blocklist update [name]`: refetch one or every subscription and record per-subscription errors. Omit `name` to update every subscription.
-* `blocklist show`: print every subscription with its source, format and last fetch state.
-* `blocklist apply [--dry-run] [--prune] [--force]`: apply the union of every subscription to the named profile. Fetches stale subscriptions, parses cached ones, partitions against the live blocklist, and (unless `--dry-run`) blocks the missing set. `--prune` extends the destructive reach to artists on the live blocklist named by no subscription; the unblock prompt is the CLI's interactive path and is skipped under `--force`.
+* `blocklist update [name]`: refetch one or every subscription and record per-subscription errors. Omit `name` to update every subscription. An unknown `name` exits 1 with `No such subscription: <name>` and no other subscription is touched. If a subscription fails to fetch, the error is recorded against that subscription and printed next to its name, the other subscriptions are still updated, and the command exits 1.
+* `blocklist show`: print every subscription with its source, format and last fetch state. This subcommand has no options.
+* `blocklist apply [--dry-run] [--prune] [--force]`: apply the union of every subscription to the named profile. Fetches stale subscriptions, parses cached ones, partitions against the live blocklist, and (unless `--dry-run`) blocks the missing set. `--prune` extends the destructive reach to artists on the live blocklist named by no subscription; the unblock prompt is the CLI's interactive path and is skipped under `--force`. The unblock prompt labels each artist as `Name (id)` with the name first so an operator scans names, not ids.
 
 **Common options on the subcommands**
 
-* `--profile`, `-p` NAME: Which account profile to operate on. Default: `default`. The `add`, `remove`, `update` and `show` subcommands accept it for parity; only `apply` actually uses it to choose the account.
+* `--profile`, `-p` NAME: Which account profile to operate on. Default: `default`. The `add` and `update` subcommands accept it for parity; only `apply` actually uses it to choose the account. `remove` and `show` do not accept `--profile`.
 
 **Examples**
 ```bash

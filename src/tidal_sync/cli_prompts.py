@@ -30,6 +30,8 @@ import sys
 import threading
 from typing import Any
 
+from .cli_shared import console
+
 _TIMEOUT_SECONDS: float = 90.0
 
 
@@ -41,8 +43,6 @@ def _label_for(candidate_id: str, name: str) -> str:
 
 
 def _print_candidates(candidates: list[tuple[str, str]]) -> None:
-    from .cli import console
-
     for cid, name in candidates:
         console.print(_label_for(cid, name))
 

@@ -33,10 +33,10 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
-from rich.console import Console
 
 from .auth import _get_all_profiles, get_session, secure_delete_token
 from .cli_blocklist import blocklist_app
+from .cli_shared import BLOCK_RAIL_THRESHOLD, console
 from .domain.enums import ClearTarget, FavoriteKind
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
 from .engine import curation
@@ -60,7 +60,6 @@ from .infrastructure.logger import (
 app = typer.Typer(
     help="Modern CLI for managing, importing, exporting, and cloning Tidal libraries."
 )
-console = Console()
 setup_global_logging()
 
 
@@ -302,10 +301,9 @@ def _unlike_verb(kind: FavoriteKind) -> Any:
 
 
 # Threshold above which `block` asks the operator to retype the profile name
-# before a destructive batch proceeds. Ten is the figure specified in
-# plan-v2 Task 6; under it the operator sees one rich line per id and nothing
-# else.
-_BLOCK_RAIL_THRESHOLD = 10
+# before a destructive batch proceeds. The figure lives in ``cli_shared`` so
+# ``cli_blocklist`` can see the same value without a lazy import from this
+# module. Ten is the figure specified in plan-v2 Task 6.
 
 # Single fixed name for the synthetic subscription built from ``--all-from``:
 # the same value across invocations keeps one cache entry instead of
@@ -338,7 +336,7 @@ def _run_block_command(
         except ValueError as e:
             raise typer.BadParameter(str(e)) from e
 
-        if rail and len(ids) > _BLOCK_RAIL_THRESHOLD:
+        if rail and len(ids) > BLOCK_RAIL_THRESHOLD:
             typed = typer.prompt(f"Type '{profile}' to confirm blocking {len(ids)} artists")
             if typed != profile:
                 console.print("[red]Confirmation did not match. Aborting.[/red]")
@@ -445,7 +443,7 @@ def _run_block_with_lists(
     leftover = [i for i in positional if i not in list_ids]
 
     union_count = len(list_ids) + len(leftover)
-    if not force and union_count > _BLOCK_RAIL_THRESHOLD:
+    if not force and union_count > BLOCK_RAIL_THRESHOLD:
         typed = typer.prompt(f"Type '{profile}' to confirm blocking {union_count} artists")
         if typed != profile:
             console.print("[red]Confirmation did not match. Aborting.[/red]")

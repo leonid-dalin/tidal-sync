@@ -18,7 +18,6 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from tidal_sync import cli as cli_module
 from tidal_sync import cli_blocklist
 from tidal_sync.cli import app
 from tidal_sync.domain.results import UploadOutcome
@@ -76,7 +75,7 @@ def test_blocklist_subcommand_help_works(subcommand: str) -> None:
 def test_blocklist_subcommand_accepts_profile_flag_long(
     monkeypatch: pytest.MonkeyPatch, subcommand: str
 ) -> None:
-    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
+    monkeypatch.setattr(cli_blocklist, "get_session", lambda profile="default": _fake_session())
 
     def _noop_fetch(source: str, fmt: str, dest: Path) -> int:
         return 0
@@ -110,7 +109,7 @@ def test_blocklist_subcommand_accepts_profile_flag_long(
 def test_blocklist_subcommand_accepts_profile_flag_short(
     monkeypatch: pytest.MonkeyPatch, subcommand: str
 ) -> None:
-    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
+    monkeypatch.setattr(cli_blocklist, "get_session", lambda profile="default": _fake_session())
 
     def _noop_fetch(source: str, fmt: str, dest: Path) -> int:
         return 0
@@ -142,7 +141,7 @@ def test_blocklist_apply_exits_one_when_to_block_has_rejections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(cli_blocklist, "load_subscriptions", lambda: [_fake_subscription()])
-    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
+    monkeypatch.setattr(cli_blocklist, "get_session", lambda profile="default": _fake_session())
 
     async def _plan_apply(session: object, subs: list[Subscription], **_: object) -> ApplyPlan:
         return ApplyPlan(
@@ -178,7 +177,7 @@ def test_blocklist_apply_dry_run_makes_no_writes(
     block_calls: list[list[str]] = []
 
     monkeypatch.setattr(cli_blocklist, "load_subscriptions", lambda: [_fake_subscription()])
-    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
+    monkeypatch.setattr(cli_blocklist, "get_session", lambda profile="default": _fake_session())
 
     async def _plan_apply(session: object, subs: list[Subscription], **_: object) -> ApplyPlan:
         return ApplyPlan(
@@ -216,7 +215,7 @@ def test_blocklist_apply_force_skips_unblock_prompt(
     prompt_calls: list[list[tuple[str, str]]] = []
 
     monkeypatch.setattr(cli_blocklist, "load_subscriptions", lambda: [_fake_subscription()])
-    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
+    monkeypatch.setattr(cli_blocklist, "get_session", lambda profile="default": _fake_session())
 
     async def _plan_apply(session: object, subs: list[Subscription], **_: object) -> ApplyPlan:
         return ApplyPlan(
@@ -614,7 +613,7 @@ def rail_setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, lis
         )
 
     monkeypatch.setattr(cli_blocklist, "load_subscriptions", lambda: [_fake_subscription()])
-    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
+    monkeypatch.setattr(cli_blocklist, "get_session", lambda profile="default": _fake_session())
 
     def _fetch(source: str, fmt: str, dest: Path) -> int:
         dest.parent.mkdir(parents=True, exist_ok=True)

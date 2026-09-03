@@ -34,16 +34,17 @@ writes.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 from typing import Annotated
 
 import typer
 
+from .auth import get_session
 from .cli_prompts import prompt_unblock
+from .cli_shared import BLOCK_RAIL_THRESHOLD, console
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
 from .domain.results import UploadOutcome
 from .engine.filterlist import FormatError, detect_format
-from .engine.filterlist_apply import ApplyPlan, execute_apply, plan_apply
+from .engine.filterlist_apply import ApplyPlan, _now_iso, execute_apply, plan_apply
 from .engine.filterlist_fetch import FetchError, fetch_source
 from .engine.filterlist_store import (
     StoreError,
@@ -64,7 +65,6 @@ blocklist_app = typer.Typer(
 
 def _report_store_error(exc: StoreError) -> None:
     """Print the standard unreadable-store message and exit 1."""
-    from .cli import console
     from .engine.filterlist_store import _index_path
 
     console.print(f"[bold red]Subscription store unreadable:[/bold red] {exc}")
@@ -75,13 +75,7 @@ def _report_store_error(exc: StoreError) -> None:
     raise typer.Exit(1) from exc
 
 
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
-
-
 def _format_table(rows: list[Subscription]) -> None:
-    from .cli import console
-
     if not rows:
         console.print("[yellow]No subscriptions.[/yellow]")
         return
@@ -104,8 +98,6 @@ def _print_plan(plan: ApplyPlan) -> None:
     A module-level helper so the print loops are not duplicated
     between the dry-run branch and the write branch.
     """
-    from .cli import console
-
     for tid, name in plan.to_block:
         console.print(f"  [green]to_block {tid}[/green] [dim]({name})[/dim]")
     for tid, name in plan.already_blocked:
@@ -134,8 +126,6 @@ def add(
     fetch caps (HTTPS only, 1 MiB cap, content-type allowlist, timeout)
     on the validation path too.
     """
-    from .cli import console
-
     try:
         fmt = detect_format(source)
         count = fetch_source(source, fmt, cache_path(name, fmt))
@@ -166,8 +156,6 @@ def remove(
     name: Annotated[str, typer.Argument(help="Subscription name to remove")],
 ) -> None:
     """Drop a subscription by name."""
-    from .cli import console
-
     if not remove_subscription(name):
         console.print(f"[bold red]No such subscription:[/bold red] {name}")
         raise typer.Exit(1)
@@ -185,8 +173,6 @@ def update(
     ] = "default",
 ) -> None:
     """Refetch one or every subscription and record per-subscription errors."""
-    from .cli import console
-
     try:
         all_subs = load_subscriptions()
     except StoreError as exc:
@@ -253,15 +239,13 @@ async def _run_apply(
     after the plan is built but before any Tidal write, so a
     declined confirmation issues zero block writes.
     """
-    from .cli import _BLOCK_RAIL_THRESHOLD, console
-
     plan = await plan_apply(session, subs)
     _print_plan(plan)
 
     if dry_run:
         return
 
-    if plan.to_block and not force and len(plan.to_block) > _BLOCK_RAIL_THRESHOLD:
+    if plan.to_block and not force and len(plan.to_block) > BLOCK_RAIL_THRESHOLD:
         typed = typer.prompt(f"Type '{profile}' to confirm blocking {len(plan.to_block)} artists")
         if typed != profile:
             console.print("[red]Confirmation did not match. Aborting.[/red]")
@@ -340,8 +324,6 @@ def apply(
     The engine decides what the sets are and what prune means; this
     module only forwards flags and prints the result.
     """
-    from .cli import console, get_session
-
     try:
         subs = load_subscriptions()
     except StoreError as exc:

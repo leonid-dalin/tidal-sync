@@ -112,11 +112,16 @@ def test_a_capped_list_blocks_no_positional_leftover(
         filterlist_store.Subscription(name="huge", source=str(source), format="txt")
     )
 
-    blocked: list[list[str]] = []
+    blocked_calls: list[int] = []
 
     async def _block(session: object, ids: list[str]) -> UploadOutcome:
-        blocked.append(list(ids))
-        return UploadOutcome(applied=list(ids), rejected=[])
+        from tidal_sync.domain.exceptions import BatchTooLarge
+
+        # The guard sits at the top of block_artists; the stub
+        # mirrors that, refusing the batch whole before any per-id
+        # work. ``blocked_calls`` records that the guard fired.
+        blocked_calls.append(len(ids))
+        raise BatchTooLarge(f"batch of {len(ids)} ids exceeds the 5000 id ceiling")
 
     async def _named(session: object) -> list[tuple[str, str]]:
         return []
@@ -129,8 +134,11 @@ def test_a_capped_list_blocks_no_positional_leftover(
     result = runner.invoke(app, ["block", "--from-list", "huge", "777", "--force"])
 
     assert result.exit_code == 1
-    assert blocked == [], "a capped run must write nothing at all"
+    # The guard fired exactly once on the full batch and refused it;
+    # no per-id work followed.
+    assert blocked_calls == [5002]
     assert "Blocked artist 777" not in result.output
+    assert "5000" in result.output
 
 
 # ---------------------------------------------------------------------------

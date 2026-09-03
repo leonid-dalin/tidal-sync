@@ -143,7 +143,6 @@ def test_blocklist_apply_exits_one_when_to_block_has_rejections(
         return ApplyOutcome(
             blocked=UploadOutcome(applied=ids[:1], rejected=ids[1:]),
             unblocked=None,
-            capped=False,
         )
 
     monkeypatch.setattr(cli_blocklist, "execute_apply", _execute_apply)
@@ -184,7 +183,6 @@ def test_blocklist_apply_dry_run_makes_no_writes(
         return ApplyOutcome(
             blocked=UploadOutcome(applied=list(ids), rejected=[]),
             unblocked=None,
-            capped=False,
         )
 
     monkeypatch.setattr(cli_blocklist, "execute_apply", _execute_apply)
@@ -232,12 +230,10 @@ def test_blocklist_apply_force_skips_unblock_prompt(
             return ApplyOutcome(
                 blocked=UploadOutcome(applied=list(ids), rejected=[]),
                 unblocked=UploadOutcome(applied=list(unblock_ids), rejected=[]),
-                capped=False,
             )
         return ApplyOutcome(
             blocked=UploadOutcome(applied=list(ids), rejected=[]),
             unblocked=None,
-            capped=False,
         )
 
     monkeypatch.setattr(cli_blocklist, "execute_apply", _execute_apply)
@@ -681,24 +677,16 @@ def rail_setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, lis
 def _execute_apply_through(box: dict[str, list[list[str]]]):
     """Build a fake ``execute_apply`` that delegates to the box-tracked verbs.
 
-    Mirrors the real function: cap check, then block_artists, then
-    optional unblock_artists. Returns ``ApplyOutcome`` so the CLI's
-    print and exit logic runs as in production.
+    Mirrors the real function: block_artists, then optional
+    unblock_artists. Returns ``ApplyOutcome`` so the CLI's print and
+    exit logic runs as in production.
     """
 
     async def _execute_apply(
         session: object, plan: ApplyPlan, *, unblock_ids: list[str]
     ) -> ApplyOutcome:
         from tidal_sync.domain.results import UploadOutcome as _UO
-        from tidal_sync.engine.filterlist_apply import (
-            MAX_APPLY_IDS,
-        )
-        from tidal_sync.engine.filterlist_apply import (
-            ApplyOutcome as _AO,
-        )
 
-        if len(plan.to_block) > MAX_APPLY_IDS:
-            return _AO(blocked=None, unblocked=None, capped=True)
         blocked = None
         if plan.to_block:
             blocked = _UO(applied=[tid for tid, _ in plan.to_block], rejected=[])
@@ -707,7 +695,7 @@ def _execute_apply_through(box: dict[str, list[list[str]]]):
         if unblock_ids:
             unblocked = _UO(applied=list(unblock_ids), rejected=[])
             box["unblock_calls"].append(list(unblock_ids))
-        return _AO(blocked=blocked, unblocked=unblocked, capped=False)
+        return ApplyOutcome(blocked=blocked, unblocked=unblocked)
 
     return _execute_apply
 

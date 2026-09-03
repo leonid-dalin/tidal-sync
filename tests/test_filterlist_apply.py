@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 
+from tidal_sync.domain.exceptions import BatchTooLarge
 from tidal_sync.domain.results import UploadOutcome
-from tidal_sync.engine import filterlist_apply, filterlist_store
+from tidal_sync.engine import curation, filterlist_apply, filterlist_store
 from tidal_sync.engine.filterlist_apply import (
-    MAX_APPLY_IDS,
     ApplyPlan,
     execute_apply,
     plan_apply,
@@ -455,7 +455,6 @@ async def test_unblock_ids_are_passed_through(monkeypatch: pytest.MonkeyPatch):
     assert r_unblock.calls == [["50"]]
     assert outcome.unblocked is not None
     assert outcome.unblocked.applied == ["50"]
-    assert outcome.capped is False
 
 
 async def test_empty_unblock_ids_issue_no_call(monkeypatch: pytest.MonkeyPatch):
@@ -486,35 +485,25 @@ async def test_empty_unblock_ids_issue_no_call(monkeypatch: pytest.MonkeyPatch):
 
 
 async def test_max_apply_ids_aborts_without_writing(monkeypatch: pytest.MonkeyPatch):
-    """A plan exceeding ``MAX_APPLY_IDS`` returns ``capped=True`` and issues no writes."""
+    """A plan exceeding the ceiling raises ``BatchTooLarge`` and issues no writes.
+
+    The guard lives inside ``curation.block_artists``, so the real
+    verb must run to exercise it; we cannot monkeypatch it with a
+    stub that returns an outcome, or the stub would silently take the
+    test's place. The exception itself is the proof that no write
+    was attempted, because the guard runs before any per-id work.
+    """
     plan = ApplyPlan(
-        to_block=[(str(i), f"name{i}") for i in range(MAX_APPLY_IDS + 1)],
+        to_block=[(str(i), f"name{i}") for i in range(5001)],
         already_blocked=[],
         unlisted=[],
         errors=[],
     )
 
-    class _R:
-        def __init__(self) -> None:
-            self.calls: list[list[str]] = []
+    from tidal_sync.domain.exceptions import BatchTooLarge
 
-        async def __call__(self, session, ids):
-            self.calls.append(list(ids))
-            return UploadOutcome(applied=list(ids), rejected=[])
-
-    r_block = _R()
-    r_unblock = _R()
-
-    monkeypatch.setattr(filterlist_apply, "block_artists", r_block)
-    monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
-
-    outcome = await execute_apply("session", plan, unblock_ids=[])
-
-    assert outcome.capped is True
-    assert outcome.blocked is None
-    assert outcome.unblocked is None
-    assert r_block.calls == []
-    assert r_unblock.calls == []
+    with pytest.raises(BatchTooLarge, match="5000"):
+        await execute_apply("session", plan, unblock_ids=[])
 
 
 # ---------------------------------------------------------------------------
@@ -605,3 +594,21 @@ def test_a_naive_last_fetched_is_treated_as_stale() -> None:
     # Use a fixed now string with a tz so the only mismatch is the naive
     # ``last_fetched``: pre-fix, ``now - last`` raised TypeError.
     assert filterlist_apply._is_stale(sub, "2026-09-02T10:00:00+00:00") is True
+
+
+async def test_block_artists_refuses_a_batch_over_the_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ceiling belongs at the single leaf both write paths share.
+
+    Enforcing it in two callers means two measures that can drift. A
+    truncated block is worse than no block, so this raises rather than
+    returning a partial outcome.
+    """
+    calls: list[str] = []
+    monkeypatch.setattr(curation, "_apply_per_id", lambda *a, **k: calls.append("wrote"))
+
+    with pytest.raises(BatchTooLarge):
+        await curation.block_artists(object(), [str(i) for i in range(5001)])
+
+    assert calls == [], "no write may be attempted once the ceiling is breached"

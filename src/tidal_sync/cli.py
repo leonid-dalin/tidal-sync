@@ -35,7 +35,7 @@ from typing import Annotated, Any
 import typer
 
 from .auth import _get_all_profiles, get_session, secure_delete_token
-from .cli_blocklist import blocklist_app, report_capped, report_store_error
+from .cli_blocklist import blocklist_app, report_store_error
 from .cli_shared import BLOCK_RAIL_THRESHOLD, _report_outcome, console
 from .domain.enums import ClearTarget, FavoriteKind
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
@@ -47,7 +47,7 @@ from .engine.exporter import (
     export_user_playlists_to_disk,
 )
 from .engine.filterlist import FormatError, detect_format
-from .engine.filterlist_apply import MAX_APPLY_IDS, plan_apply
+from .engine.filterlist_apply import plan_apply
 from .engine.filterlist_store import StoreError, Subscription, load_subscriptions
 from .engine.importer import import_collection_from_disk
 from .engine.parser import extract_tidal_id
@@ -425,6 +425,21 @@ def _run_block_with_lists(
     try:
         session = get_session(profile)
         plan = asyncio.run(plan_apply(session, subs))
+        list_ids = [tid for tid, _name in plan.to_block]
+        covered = set(list_ids) | {tid for tid, _name in plan.already_blocked}
+        to_write = list_ids + [i for i in positional if i not in covered]
+
+        if not force and len(to_write) > BLOCK_RAIL_THRESHOLD:
+            typed = typer.prompt(f"Type '{profile}' to confirm blocking {len(to_write)} artists")
+            if typed != profile:
+                console.print("[red]Confirmation did not match. Aborting.[/red]")
+                raise typer.Exit(1)
+
+        outcome = (
+            asyncio.run(curation.block_artists(session, to_write))
+            if to_write
+            else UploadOutcome(applied=[], rejected=[])
+        )
     except TidalAuthenticationError as e:
         console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
         raise typer.Exit(1) from e
@@ -432,24 +447,6 @@ def _run_block_with_lists(
         console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
         raise typer.Exit(1) from e
 
-    list_ids = [tid for tid, _name in plan.to_block]
-    covered = set(list_ids) | {tid for tid, _name in plan.already_blocked}
-    to_write = list_ids + [i for i in positional if i not in covered]
-
-    if not force and len(to_write) > BLOCK_RAIL_THRESHOLD:
-        typed = typer.prompt(f"Type '{profile}' to confirm blocking {len(to_write)} artists")
-        if typed != profile:
-            console.print("[red]Confirmation did not match. Aborting.[/red]")
-            raise typer.Exit(1)
-
-    if len(to_write) > MAX_APPLY_IDS:
-        report_capped(len(to_write))
-
-    outcome = (
-        asyncio.run(curation.block_artists(session, to_write))
-        if to_write
-        else UploadOutcome(applied=[], rejected=[])
-    )
     failed = _report_outcome(outcome, "Blocked artist", "block failed")
 
     for tid, _name in plan.already_blocked:

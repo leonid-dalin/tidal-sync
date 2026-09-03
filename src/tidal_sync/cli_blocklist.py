@@ -44,13 +44,7 @@ from .cli_prompts import prompt_unblock
 from .cli_shared import BLOCK_RAIL_THRESHOLD, _report_outcome, console
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
 from .engine.filterlist import FormatError, detect_format
-from .engine.filterlist_apply import (
-    MAX_APPLY_IDS,
-    ApplyPlan,
-    execute_apply,
-    now_iso,
-    plan_apply,
-)
+from .engine.filterlist_apply import ApplyPlan, execute_apply, now_iso, plan_apply
 from .engine.filterlist_fetch import FetchError, fetch_source
 from .engine.filterlist_store import (
     StoreError,
@@ -78,14 +72,6 @@ def report_store_error(exc: StoreError) -> NoReturn:
         "  [dim]fix or delete subscriptions.json, then retry.[/dim]"
     )
     raise typer.Exit(1) from exc
-
-
-def report_capped(to_block_count: int) -> NoReturn:
-    console.print(
-        f"[bold red]Refused:[/bold red] to_block has {to_block_count} ids, "
-        f"exceeds MAX_APPLY_IDS={MAX_APPLY_IDS}; aborting"
-    )
-    raise typer.Exit(1)
 
 
 def _format_table(rows: list[Subscription]) -> None:
@@ -262,9 +248,6 @@ async def _run_apply(
         unblock_ids = prompt_unblock(plan.unlisted, force=force) if plan.unlisted else []
 
     outcome = await execute_apply(session, plan, unblock_ids=unblock_ids)
-
-    if outcome.capped:
-        report_capped(len(plan.to_block))
 
     failed = _report_outcome(outcome.blocked, "Blocked artist", "block failed")
     failed += _report_outcome(outcome.unblocked, "unblock", "unblock failed")

@@ -54,10 +54,6 @@ from .filterlist import FormatError, parse_filter_list
 from .filterlist_fetch import FetchError, fetch_source
 from .filterlist_store import Subscription, cache_path
 
-# The largest batch we will ever push in a single apply run. Exceeding
-# the cap aborts the whole run; we never block a truncated set.
-MAX_APPLY_IDS: int = 5000
-
 
 def now_iso() -> str:
     """The current UTC time as an ISO string.
@@ -90,14 +86,13 @@ class ApplyOutcome:
     """The result of running ``execute_apply`` against a plan.
 
     ``blocked`` and ``unblocked`` carry the engine's per-id
-    classification. ``capped`` is set when the plan exceeded the
-    batch ceiling; in that case neither field is populated because
-    the run aborted before any write.
+    classification. The batch ceiling is enforced at the single
+    write leaf and raises rather than returning a partial outcome,
+    so there is no ``capped`` field to set.
     """
 
     blocked: UploadOutcome | None
     unblocked: UploadOutcome | None
-    capped: bool = False
 
 
 def _is_stale(sub: Subscription, now_iso: str) -> bool:
@@ -211,9 +206,9 @@ async def execute_apply(
 ) -> ApplyOutcome:
     """Apply a previously computed ``ApplyPlan`` to Tidal.
 
-    The cap is enforced before any write: exceeding ``MAX_APPLY_IDS``
-    returns ``capped=True`` with both outcomes ``None`` so the caller can
-    surface the abort without a partial block.
+    The batch ceiling is enforced inside ``block_artists`` itself, so
+    exceeding it raises ``BatchTooLarge`` here rather than returning a
+    capped outcome.
 
     ``unblock_ids`` is the caller's decision, not the engine's. Passing an
     explicit list rather than a ``prune`` flag is what makes "this engine
@@ -221,9 +216,6 @@ async def execute_apply(
     instead of a comment: there is no value of any argument that makes it
     choose.
     """
-    if len(plan.to_block) > MAX_APPLY_IDS:
-        return ApplyOutcome(blocked=None, unblocked=None, capped=True)
-
     blocked: UploadOutcome | None = None
     if plan.to_block:
         blocked = await block_artists(session, [pair[0] for pair in plan.to_block])
@@ -232,4 +224,4 @@ async def execute_apply(
     if unblock_ids:
         unblocked = await unblock_artists(session, unblock_ids)
 
-    return ApplyOutcome(blocked=blocked, unblocked=unblocked, capped=False)
+    return ApplyOutcome(blocked=blocked, unblocked=unblocked)

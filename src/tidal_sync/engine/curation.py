@@ -33,13 +33,17 @@ import requests
 import tidalapi
 from loguru import logger
 
-from ..domain.exceptions import TidalPoisonError, TidalTransientError
+from ..domain.exceptions import BatchTooLarge, TidalPoisonError, TidalTransientError
 from ..domain.protocols import TidalUser
 from ..domain.results import UploadOutcome
 from .network import execute_network, fetch_blocked_artists_strict
 from .workers import run_headless_tasks_async
 
 _BLOCK_METHOD = Literal["POST", "DELETE"]
+
+# The largest batch we will ever push in a single block run. Exceeding
+# the cap aborts the whole run; we never block a truncated set.
+MAX_APPLY_IDS: int = 5000
 
 
 def _user(session: tidalapi.Session) -> TidalUser:
@@ -158,6 +162,10 @@ async def block_artists(session: tidalapi.Session, ids: list[str]) -> UploadOutc
     after the read was a silent no-op, not a success, and moves to
     rejected.
     """
+    if len(ids) > MAX_APPLY_IDS:
+        raise BatchTooLarge(
+            f"batch of {len(ids)} ids exceeds the {MAX_APPLY_IDS} id ceiling; nothing was written"
+        )
     outcome = await _apply_per_id(ids, _block_write_action(session, "POST", False), "Block artist")
     return await _reconcile_block_write(session, outcome, ids, expected_present=True)
 

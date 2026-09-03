@@ -23,7 +23,7 @@ from tidal_sync import cli_blocklist
 from tidal_sync.cli import app
 from tidal_sync.domain.results import UploadOutcome
 from tidal_sync.engine.filterlist import FormatError, parse_filter_list
-from tidal_sync.engine.filterlist_apply import ApplyPlan
+from tidal_sync.engine.filterlist_apply import ApplyOutcome, ApplyPlan
 from tidal_sync.engine.filterlist_fetch import FetchError
 from tidal_sync.engine.filterlist_store import Subscription
 
@@ -154,10 +154,15 @@ def test_blocklist_apply_exits_one_when_to_block_has_rejections(
     monkeypatch.setattr(cli_blocklist, "plan_apply", _plan_apply)
     monkeypatch.setattr(cli_blocklist, "prompt_unblock", lambda candidates, *, force: [])
 
-    async def _block_artists(session: object, ids: list[str]) -> UploadOutcome:
-        return UploadOutcome(applied=[ids[0]], rejected=[ids[1]])
+    async def _execute_apply(session: object, plan: ApplyPlan, *, prune: bool) -> ApplyOutcome:
+        ids = [tid for tid, _name in plan.to_block]
+        return ApplyOutcome(
+            blocked=UploadOutcome(applied=ids[:1], rejected=ids[1:]),
+            unblocked=None,
+            capped=False,
+        )
 
-    monkeypatch.setattr(cli_blocklist, "block_artists", _block_artists)
+    monkeypatch.setattr(cli_blocklist, "execute_apply", _execute_apply)
 
     result = runner.invoke(app, ["blocklist", "apply", "--force"])
 
@@ -165,7 +170,7 @@ def test_blocklist_apply_exits_one_when_to_block_has_rejections(
     assert "102" in result.output
 
 
-# Test 4: --dry-run performs no writes. block_artists must never be called.
+# Test 4: --dry-run performs no writes. execute_apply must never be called.
 def test_blocklist_apply_dry_run_makes_no_writes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -185,20 +190,21 @@ def test_blocklist_apply_dry_run_makes_no_writes(
     monkeypatch.setattr(cli_blocklist, "plan_apply", _plan_apply)
     monkeypatch.setattr(cli_blocklist, "prompt_unblock", lambda candidates, *, force: [])
 
-    async def _block_artists(session: object, ids: list[str]) -> UploadOutcome:
+    async def _execute_apply(session: object, plan: ApplyPlan, *, prune: bool) -> ApplyOutcome:
+        ids = [tid for tid, _name in plan.to_block]
         block_calls.append(list(ids))
-        return UploadOutcome(applied=list(ids), rejected=[])
+        return ApplyOutcome(
+            blocked=UploadOutcome(applied=list(ids), rejected=[]),
+            unblocked=None,
+            capped=False,
+        )
 
-    async def _unblock_artists(session: object, ids: list[str]) -> UploadOutcome:
-        return UploadOutcome(applied=list(ids), rejected=[])
-
-    monkeypatch.setattr(cli_blocklist, "block_artists", _block_artists)
-    monkeypatch.setattr(cli_blocklist, "unblock_artists", _unblock_artists)
+    monkeypatch.setattr(cli_blocklist, "execute_apply", _execute_apply)
 
     result = runner.invoke(app, ["blocklist", "apply", "--dry-run", "--prune", "--force"])
 
     assert result.exit_code == 0, result.output
-    assert block_calls == [], "dry-run must not call block_artists"
+    assert block_calls == [], "dry-run must not call execute_apply"
 
 
 # Test 5: --force skips the rail AND skips the unblock prompt.
@@ -227,24 +233,32 @@ def test_blocklist_apply_force_skips_unblock_prompt(
 
     monkeypatch.setattr(cli_blocklist, "prompt_unblock", _prompt_unblock)
 
-    async def _block_artists(session: object, ids: list[str]) -> UploadOutcome:
-        return UploadOutcome(applied=list(ids), rejected=[])
+    async def _execute_apply(session: object, plan: ApplyPlan, *, prune: bool) -> ApplyOutcome:
+        ids = [tid for tid, _name in plan.to_block]
+        unlisted_ids = [tid for tid, _name in plan.unlisted]
+        if prune and unlisted_ids:
+            unblock_calls.append(list(unlisted_ids))
+            return ApplyOutcome(
+                blocked=UploadOutcome(applied=list(ids), rejected=[]),
+                unblocked=UploadOutcome(applied=list(unlisted_ids), rejected=[]),
+                capped=False,
+            )
+        return ApplyOutcome(
+            blocked=UploadOutcome(applied=list(ids), rejected=[]),
+            unblocked=None,
+            capped=False,
+        )
 
-    async def _unblock_artists(session: object, ids: list[str]) -> UploadOutcome:
-        unblock_calls.append(list(ids))
-        return UploadOutcome(applied=list(ids), rejected=[])
-
-    monkeypatch.setattr(cli_blocklist, "block_artists", _block_artists)
-    monkeypatch.setattr(cli_blocklist, "unblock_artists", _unblock_artists)
+    monkeypatch.setattr(cli_blocklist, "execute_apply", _execute_apply)
 
     # 998 + 997 are well below the ten-id rail, so the rail is irrelevant;
-    # what we pin is that prompt_unblock sees force=True and returns [].
+    # what we pin is that --prune routes the unblock through execute_apply
+    # and prompt_unblock is never asked.
     result = runner.invoke(app, ["blocklist", "apply", "--prune", "--force"])
 
     assert result.exit_code == 0, result.output
-    assert len(prompt_calls) == 1
-    assert prompt_calls[0][0][0] == "998"
-    assert unblock_calls == [], "force must skip the unblock prompt and therefore the unblock"
+    assert prompt_calls == [], "force must skip the unblock prompt"
+    assert unblock_calls == [["998", "997"]], "execute_apply must handle the unblock under --prune"
 
 
 # Test 6: an unsupported extension is rejected at add, not at apply.
@@ -510,3 +524,181 @@ def test_blocklist_remove_and_show_round_trip_after_fixed_add(
     remove_result = runner.invoke(app, ["blocklist", "remove", "kpop"])
     assert remove_result.exit_code == 0, remove_result.output
     assert removed == ["kpop"]
+
+
+# ---------------------------------------------------------------------------
+# Tests for the rail guarding execute_apply.
+#
+# Background: the parent found that ``plan_apply`` performed the
+# block write before the CLI asked the operator to retype the
+# profile name, so a declined confirmation still left the account
+# touched. These tests drive the REAL ``plan_apply`` and fake only
+# the curation verbs; a wrong-shaped answer must leave
+# ``block_artists`` untouched and a right-shaped answer must call
+# it exactly once.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def rail_setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, list[list[str]]]:
+    """Wire the dependencies of the real ``plan_apply`` for the rail tests.
+
+    Returns a box the test can read to count ``block_artists`` and
+    ``unblock_artists`` calls without monkeypatching them.
+    """
+    from tidal_sync.engine import filterlist_apply, filterlist_store
+
+    box: dict[str, list[list[str]]] = {"block_calls": [], "unblock_calls": []}
+
+    monkeypatch.setattr(filterlist_store, "STORE_DIR", tmp_path / "filter_lists")
+
+    ids = [
+        ("501", "Alpha"),
+        ("502", "Beta"),
+        ("503", "Gamma"),
+        ("504", "Delta"),
+        ("505", "Epsilon"),
+        ("506", "Zeta"),
+        ("507", "Eta"),
+        ("508", "Theta"),
+        ("509", "Iota"),
+        ("510", "Kappa"),
+        ("511", "Lambda"),
+    ]
+
+    def _fake_subscription() -> Subscription:
+        now = datetime.now(UTC).isoformat()
+        return Subscription(
+            name="spam",
+            source="https://example.test/spam.txt",
+            format="txt",
+            last_fetched=now,
+            last_count=len(ids),
+        )
+
+    monkeypatch.setattr(cli_blocklist, "load_subscriptions", lambda: [_fake_subscription()])
+    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
+
+    def _fetch(source: str, fmt: str, dest: Path) -> int:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("\n".join(tid for tid, _name in ids) + "\n", encoding="utf-8")
+        return len(ids)
+
+    monkeypatch.setattr(cli_blocklist, "fetch_source", _fetch)
+
+    # Pre-populate the cache so the real plan_apply reads from disk
+    # rather than refetching: the subscription is fresh.
+    cache_dir = tmp_path / "filter_lists" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "spam.txt").write_text(
+        "\n".join(tid for tid, _name in ids) + "\n", encoding="utf-8"
+    )
+
+    async def _fetch_blocked_ids(session: object) -> list[str]:
+        return []
+
+    monkeypatch.setattr(filterlist_apply, "fetch_source", _fetch)
+    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artist_ids", _fetch_blocked_ids)
+    monkeypatch.setattr(filterlist_apply, "parse_filter_list", lambda data, fmt: ids)
+
+    async def _block(session: object, ids: list[str]) -> UploadOutcome:
+        box["block_calls"].append(list(ids))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    async def _unblock(session: object, ids: list[str]) -> UploadOutcome:
+        box["unblock_calls"].append(list(ids))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    monkeypatch.setattr(filterlist_apply, "block_artists", _block)
+    monkeypatch.setattr(filterlist_apply, "unblock_artists", _unblock)
+    # The CLI imports execute_apply at module load; patch the
+    # binding the CLI holds, not just the attribute on the engine
+    # module.
+    monkeypatch.setattr(cli_blocklist, "execute_apply", _execute_apply_through(box))
+
+    return box
+
+
+def _execute_apply_through(box: dict[str, list[list[str]]]):
+    """Build a fake ``execute_apply`` that delegates to the box-tracked verbs.
+
+    Mirrors the real function: cap check, then block_artists, then
+    optional unblock_artists. Returns ``ApplyOutcome`` so the CLI's
+    print and exit logic runs as in production.
+    """
+
+    async def _execute_apply(session: object, plan: ApplyPlan, *, prune: bool) -> ApplyOutcome:
+        from tidal_sync.domain.results import UploadOutcome as _UO
+        from tidal_sync.engine.filterlist_apply import (
+            MAX_APPLY_IDS,
+        )
+        from tidal_sync.engine.filterlist_apply import (
+            ApplyOutcome as _AO,
+        )
+
+        if len(plan.to_block) > MAX_APPLY_IDS:
+            return _AO(blocked=None, unblocked=None, capped=True)
+        blocked = None
+        if plan.to_block:
+            blocked = _UO(applied=[tid for tid, _ in plan.to_block], rejected=[])
+            box["block_calls"].append([tid for tid, _ in plan.to_block])
+        unblocked = None
+        if prune and plan.unlisted:
+            unblocked = _UO(applied=[tid for tid, _ in plan.unlisted], rejected=[])
+            box["unblock_calls"].append([tid for tid, _ in plan.unlisted])
+        return _AO(blocked=blocked, unblocked=unblocked, capped=False)
+
+    return _execute_apply
+
+
+def test_declining_the_rail_blocks_nothing(
+    rail_setup: dict[str, list[list[str]]],
+) -> None:
+    """Declining the confirmation must leave ``block_artists`` untouched.
+
+    The pre-fix bug was that ``plan_apply`` performed the block
+    write before the CLI asked the operator to retype the profile
+    name, so a declined prompt still touched the account.
+    """
+    box = rail_setup
+    # Four ids are above the ten-id rail's "print every id, no prompt"
+    # threshold is below; we add enough positional ids to push it
+    # over by using the subscription union alone. The plan carries
+    # four ids, so without --force the rail fires.
+    result = runner.invoke(app, ["blocklist", "apply"], input="wrong-name\n")
+
+    assert result.exit_code != 0, result.output
+    assert "Confirmation did not match" in result.output
+    assert box["block_calls"] == [], "a declined confirmation must never call block_artists"
+    assert box["unblock_calls"] == [], "a declined confirmation must never call unblock_artists"
+
+
+def test_confirming_the_rail_blocks_exactly_once(
+    rail_setup: dict[str, list[list[str]]],
+) -> None:
+    """Accepting the confirmation calls ``block_artists`` exactly once with every id.
+
+    The pre-fix bug doubled the writes because the same ids were
+    blocked once inside the planner and once again in the CLI.
+    """
+    box = rail_setup
+    result = runner.invoke(app, ["blocklist", "apply"], input="default\n")
+
+    assert result.exit_code == 0, result.output
+    assert len(box["block_calls"]) == 1, (
+        f"block_artists must be called exactly once, got {len(box['block_calls'])}"
+    )
+    assert sorted(box["block_calls"][0]) == [
+        "501",
+        "502",
+        "503",
+        "504",
+        "505",
+        "506",
+        "507",
+        "508",
+        "509",
+        "510",
+        "511",
+    ]
+    assert box["unblock_calls"] == [], "without --prune the rail must not trigger any unblock"

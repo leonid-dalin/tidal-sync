@@ -46,7 +46,7 @@ from .engine.exporter import (
     export_user_playlists_to_disk,
 )
 from .engine.filterlist import FormatError, parse_filter_list
-from .engine.filterlist_apply import plan_apply
+from .engine.filterlist_apply import execute_apply, plan_apply
 from .engine.filterlist_store import Subscription, load_subscriptions
 from .engine.importer import import_collection_from_disk
 from .engine.parser import extract_tidal_id
@@ -412,19 +412,15 @@ def _run_block_with_lists(
     """Run ``plan_apply`` on the union of positional and list ids.
 
     Routes around ``_run_block_command`` so the new flags do not widen
-    its signature and risk changing ``unblock``. The rail fires on the
-    union length, matching ``blocklist apply``.
+    its signature and risk changing ``unblock``. The rail fires on
+    the union length, matching ``blocklist apply``. The list ids
+    flow through ``execute_apply`` exactly once; the positional
+    leftover is a separate ``block_artists`` call so its
+    per-id classification stays on its own print block.
     """
     try:
         session = get_session(profile)
-        plan = asyncio.run(
-            plan_apply(
-                session,
-                subs,
-                dry_run=False,
-                prune=False,
-            )
-        )
+        plan = asyncio.run(plan_apply(session, subs))
     except TidalAuthenticationError as e:
         console.print(f"[bold red]Authentication Failed:[/bold red] {e}")
         raise typer.Exit(1) from e
@@ -444,24 +440,34 @@ def _run_block_with_lists(
             console.print("[red]Confirmation did not match. Aborting.[/red]")
             raise typer.Exit(1)
 
+    list_outcome = asyncio.run(execute_apply(session, plan, prune=False))
+
     if leftover:
         leftover_outcome = asyncio.run(curation.block_artists(session, leftover))
         for item_id in leftover_outcome.applied:
             console.print(f"  [green]Blocked artist {item_id}[/green]")
-        for item_id in leftover_outcome.rejected:
-            console.print(f"  [red]Blocked artist {item_id}[/red]")
         if leftover_outcome.rejected:
+            for item_id in leftover_outcome.rejected:
+                console.print(f"  [red]block failed {item_id}[/red]")
             raise typer.Exit(1)
-        for tid, _name in plan.to_block:
-            console.print(f"  [green]Blocked artist {tid}[/green]")
-        for tid, _name in plan.already_blocked:
-            console.print(f"  [cyan]Blocked artist {tid}[/cyan]")
-        return
 
-    for tid, _name in plan.to_block:
-        console.print(f"  [green]Blocked artist {tid}[/green]")
+    if list_outcome.capped:
+        console.print(
+            f"[bold red]Refused:[/bold red] to_block has {len(plan.to_block)} ids, "
+            f"exceeds MAX_APPLY_IDS={5000}; aborting"
+        )
+        raise typer.Exit(1)
+
+    if list_outcome.blocked is not None:
+        for item_id in list_outcome.blocked.applied:
+            console.print(f"  [green]Blocked artist {item_id}[/green]")
+        if list_outcome.blocked.rejected:
+            for item_id in list_outcome.blocked.rejected:
+                console.print(f"  [red]block failed {item_id}[/red]")
+            raise typer.Exit(1)
+
     for tid, _name in plan.already_blocked:
-        console.print(f"  [cyan]Blocked artist {tid}[/cyan]")
+        console.print(f"  [cyan]Already blocked artist {tid}[/cyan]")
 
     if plan.errors:
         for sub_name, err in plan.errors:

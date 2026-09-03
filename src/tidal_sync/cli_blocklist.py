@@ -23,6 +23,12 @@ raw subscriptions: it forwards the operator's flags to ``plan_apply``
 and prints the result. The unblock prompt is wired here because the
 CLI owns the "ask the operator" decision, but the list of unblock
 candidates comes from the engine.
+
+The CLI is the only layer that issues Tidal writes for an apply.
+``plan_apply`` is pure and ``execute_apply`` is the single mutation
+point; both run inside one ``asyncio.run`` call so the confirmation
+rail sits between them and a declined prompt issues zero block
+writes.
 """
 
 from __future__ import annotations
@@ -35,9 +41,9 @@ import typer
 
 from .cli_prompts import prompt_unblock
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
-from .engine.curation import block_artists, unblock_artists
+from .domain.results import UploadOutcome
 from .engine.filterlist import FormatError
-from .engine.filterlist_apply import plan_apply
+from .engine.filterlist_apply import ApplyPlan, execute_apply, plan_apply
 from .engine.filterlist_fetch import FetchError, fetch_source
 from .engine.filterlist_store import (
     Subscription,
@@ -86,6 +92,24 @@ def _format_table(rows: list[Subscription]) -> None:
             + "[/dim]"
         )
         console.print(f"    [dim]{sub.source}[/dim]")
+
+
+def _print_plan(plan: ApplyPlan) -> None:
+    """Print every set on an ``ApplyPlan`` in the order the CLI has always used.
+
+    A module-level helper so the print loops are not duplicated
+    between the dry-run branch and the write branch.
+    """
+    from .cli import console
+
+    for tid, name in plan.to_block:
+        console.print(f"  [green]to_block {tid}[/green] [dim]({name})[/dim]")
+    for tid, name in plan.already_blocked:
+        console.print(f"  [cyan]already_blocked {tid}[/cyan] [dim]({name})[/dim]")
+    for tid, name in plan.unlisted:
+        console.print(f"  [yellow]unlisted {tid}[/yellow] [dim]({name})[/dim]")
+    for sub_name, err in plan.errors:
+        console.print(f"  [red]error {sub_name}: {err}[/red]")
 
 
 @blocklist_app.command(name="add")
@@ -203,6 +227,83 @@ def show(
     _format_table(load_subscriptions())
 
 
+async def _run_apply(
+    *,
+    session,
+    profile: str,
+    subs: list[Subscription],
+    dry_run: bool,
+    prune: bool,
+    force: bool,
+) -> None:
+    """Single async driver for ``blocklist apply``.
+
+    Computes the plan, prints it, gates on the rail, and only then
+    hands the plan to ``execute_apply``. The rail is evaluated
+    after the plan is built but before any Tidal write, so a
+    declined confirmation issues zero block writes.
+    """
+    from .cli import _BLOCK_RAIL_THRESHOLD, console
+
+    plan = await plan_apply(session, subs)
+    _print_plan(plan)
+
+    if dry_run:
+        return
+
+    if plan.to_block and not force and len(plan.to_block) > _BLOCK_RAIL_THRESHOLD:
+        typed = typer.prompt(f"Type '{profile}' to confirm blocking {len(plan.to_block)} artists")
+        if typed != profile:
+            console.print("[red]Confirmation did not match. Aborting.[/red]")
+            raise typer.Exit(1)
+
+    outcome = await execute_apply(session, plan, prune=prune)
+
+    if outcome.capped:
+        console.print(
+            f"[bold red]Refused:[/bold red] to_block has {len(plan.to_block)} ids, "
+            f"exceeds MAX_APPLY_IDS={5000}; aborting"
+        )
+        raise typer.Exit(1)
+
+    if outcome.blocked is not None:
+        assert outcome.blocked is not None
+        blocked_outcome: UploadOutcome = outcome.blocked
+        for tid in blocked_outcome.applied:
+            console.print(f"  [green]Blocked artist {tid}[/green]")
+        for tid in blocked_outcome.rejected:
+            console.print(f"  [red]block failed {tid}[/red]")
+        if blocked_outcome.rejected:
+            raise typer.Exit(1)
+
+    # Under --prune the engine already unblocked plan.unlisted, so
+    # re-offering it would ask the operator to confirm a decision
+    # already taken. The prompt is skipped in that case.
+    if not prune and plan.unlisted:
+        picked = prompt_unblock(plan.unlisted, force=force)
+        if picked:
+            from .engine.curation import unblock_artists
+
+            unblock_outcome = await unblock_artists(session, picked)
+            for tid in unblock_outcome.applied:
+                console.print(f"  [green]unblock {tid}[/green]")
+            for tid in unblock_outcome.rejected:
+                console.print(f"  [red]unblock failed {tid}[/red]")
+            if unblock_outcome.rejected:
+                raise typer.Exit(1)
+    elif prune and outcome.unblocked is not None:
+        unblock_outcome = outcome.unblocked
+        for tid in unblock_outcome.applied:
+            console.print(f"  [green]unblock {tid}[/green]")
+        for tid in unblock_outcome.rejected:
+            console.print(f"  [red]unblock failed {tid}[/red]")
+        if unblock_outcome.rejected:
+            raise typer.Exit(1)
+
+    if plan.errors:
+        raise typer.Exit(1)
+
+
 @blocklist_app.command(name="apply")
 def apply(
     profile: Annotated[
@@ -229,9 +330,7 @@ def apply(
     The engine decides what the sets are and what prune means; this
     module only forwards flags and prints the result.
     """
-    # Lazy imports to avoid the circular dependency with cli.py, which
-    # imports this module to register the sub-app.
-    from .cli import _BLOCK_RAIL_THRESHOLD, console, get_session
+    from .cli import console, get_session
 
     subs = load_subscriptions()
     if not subs:
@@ -240,12 +339,14 @@ def apply(
 
     try:
         session = get_session(profile)
-        plan = asyncio.run(
-            plan_apply(
-                session,
-                subs,
+        asyncio.run(
+            _run_apply(
+                session=session,
+                profile=profile,
+                subs=subs,
                 dry_run=dry_run,
                 prune=prune,
+                force=force,
             )
         )
     except TidalAuthenticationError as exc:
@@ -254,45 +355,3 @@ def apply(
     except TidalSyncError as exc:
         console.print(f"[bold red]tidal-sync could not complete:[/bold red] {exc}")
         raise typer.Exit(1) from exc
-
-    for tid, name in plan.to_block:
-        console.print(f"  [green]to_block {tid}[/green] [dim]({name})[/dim]")
-    for tid, name in plan.already_blocked:
-        console.print(f"  [cyan]already_blocked {tid}[/cyan] [dim]({name})[/dim]")
-    for tid, name in plan.unlisted:
-        console.print(f"  [yellow]unlisted {tid}[/yellow] [dim]({name})[/dim]")
-    for sub_name, err in plan.errors:
-        console.print(f"  [red]error {sub_name}: {err}[/red]")
-
-    if dry_run:
-        return
-
-    if plan.to_block:
-        if not force and len(plan.to_block) > _BLOCK_RAIL_THRESHOLD:
-            typed = typer.prompt(
-                f"Type '{profile}' to confirm blocking {len(plan.to_block)} artists"
-            )
-            if typed != profile:
-                console.print("[red]Confirmation did not match. Aborting.[/red]")
-                raise typer.Exit(1)
-        to_block_ids = [tid for tid, _ in plan.to_block]
-        outcome = asyncio.run(block_artists(session, to_block_ids))
-        if outcome.rejected:
-            for tid in outcome.rejected:
-                console.print(f"  [red]block failed {tid}[/red]")
-            raise typer.Exit(1)
-
-    if plan.unlisted:
-        # The CLI owns the "ask the operator" decision. prompt_unblock
-        # already collapses every non-force path to []; the unblock
-        # only runs for ids the operator picked.
-        picked = prompt_unblock(plan.unlisted, force=force)
-        if picked:
-            unblock_outcome = asyncio.run(unblock_artists(session, picked))
-            if unblock_outcome.rejected:
-                for tid in unblock_outcome.rejected:
-                    console.print(f"  [red]unblock failed {tid}[/red]")
-                raise typer.Exit(1)
-
-    if plan.errors:
-        raise typer.Exit(1)

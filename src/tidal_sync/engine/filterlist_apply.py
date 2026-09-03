@@ -20,11 +20,17 @@
 Given a set of subscriptions, compute the union of their ids, the
 set of ids already blocked on the live blocklist, and the set of
 ids blocked on the live blocklist but named by no subscription.
-Optionally act on those sets.
 
 The decision about what to unblock lives at this layer, not in the
 CLI: this module owns the "what does prune mean" invariant. The CLI
 only decides whether to ask the operator to invoke this engine.
+
+Layering: ``plan_apply`` is pure and never touches the network
+beyond reading the live blocklist. The confirmation rail sits
+between the planner and the writer so a declined prompt issues
+zero block writes. The writer is ``execute_apply`` and accepts a
+plan; it owns the cap check and the calls to ``block_artists`` and
+``unblock_artists``.
 """
 
 from __future__ import annotations
@@ -33,6 +39,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import tidalapi
+
+from ..domain.results import UploadOutcome
 
 # Imported here so tests can monkeypatch by attribute. The real
 # implementations are used unchanged; nothing in this module redefines
@@ -70,6 +78,21 @@ class ApplyPlan:
     errors: list[tuple[str, str]]
 
 
+@dataclass
+class ApplyOutcome:
+    """The result of running ``execute_apply`` against a plan.
+
+    ``blocked`` and ``unblocked`` carry the engine's per-id
+    classification. ``capped`` is set when the plan exceeded the
+    batch ceiling; in that case neither field is populated because
+    the run aborted before any write.
+    """
+
+    blocked: UploadOutcome | None
+    unblocked: UploadOutcome | None
+    capped: bool = False
+
+
 def _is_stale(sub: Subscription, now_iso: str) -> bool:
     """A list is stale if it was never fetched or its ``last_fetched`` is older than ``ttl_hours``.
 
@@ -93,19 +116,15 @@ def _is_stale(sub: Subscription, now_iso: str) -> bool:
 async def plan_apply(
     session: tidalapi.Session,
     subscriptions: list[Subscription],
-    *,
-    dry_run: bool,
-    prune: bool,
 ) -> ApplyPlan:
-    """Compute the apply plan and optionally act on it.
+    """Compute the apply plan from subscriptions and the live blocklist.
 
-    Steps 1 to 4 always run: fetch stale lists, parse cached lists,
-    read the live blocklist, partition the union into ``to_block``,
-    ``already_blocked`` and ``unlisted``.
-
-    Steps 5 to 8 run only when ``dry_run`` is False. The cap is
-    enforced before any write. ``prune`` controls whether the
-    ``unlisted`` set is sent to ``unblock_artists``.
+    Pure: the only network read is the live blocklist, and no Tidal
+    write is ever issued from here. The cap, the ``block_artists``
+    call and the ``unblock_artists`` call live in
+    ``execute_apply``. Splitting them keeps the rail in the CLI
+    honest: there is no path through the engine that bypasses the
+    CLI's confirmation prompt.
     """
     now_iso = _now_iso()
 
@@ -157,44 +176,39 @@ async def plan_apply(
     union_id_set = set(order)
     unlisted: list[tuple[str, str]] = [(bid, "") for bid in blocked_ids if bid not in union_id_set]
 
-    # Step 5. Dry run stops here. No network write of any kind.
-    if dry_run:
-        return ApplyPlan(
-            to_block=to_block,
-            already_blocked=already_blocked,
-            unlisted=unlisted,
-            errors=errors,
-        )
-
-    # Step 6. Cap check before any write. Chosen semantics: record an
-    # error and return without writing. A truncated block is worse
-    # than no block at all, because the user expects no partial writes.
-    if len(to_block) > MAX_APPLY_IDS:
-        msg = f"to_block has {len(to_block)} ids, exceeds MAX_APPLY_IDS={MAX_APPLY_IDS}; aborting"
-        errors.append(("<apply>", msg))
-        return ApplyPlan(
-            to_block=to_block,
-            already_blocked=already_blocked,
-            unlisted=unlisted,
-            errors=errors,
-        )
-
-    # Step 7. Block the union minus the live blocklist. An empty
-    # to_block is a no-op, and calling through to ``block_artists``
-    # would issue zero writes and cost nothing, but the tests pin the
-    # contract that no call is made in that case.
-    if to_block:
-        await block_artists(session, [pair[0] for pair in to_block])
-
-    # Step 8. Prune only on explicit request. The interactive prompt
-    # in cli_prompts.py is the other path to an unblock; this engine
-    # is not invoked from there.
-    if prune and unlisted:
-        await unblock_artists(session, [bid for bid, _name in unlisted])
-
     return ApplyPlan(
         to_block=to_block,
         already_blocked=already_blocked,
         unlisted=unlisted,
         errors=errors,
     )
+
+
+async def execute_apply(
+    session: tidalapi.Session,
+    plan: ApplyPlan,
+    *,
+    prune: bool,
+) -> ApplyOutcome:
+    """Apply a previously computed ``ApplyPlan`` to Tidal.
+
+    The cap is enforced before any write: exceeding
+    ``MAX_APPLY_IDS`` returns an ``ApplyOutcome`` with ``capped=True``
+    and both outcomes ``None`` so the CLI can surface the abort
+    without issuing a partial block. With the cap honoured the
+    block call is made only if there is something to block, and the
+    unblock call only when ``prune`` is set and there is something
+    to unblock.
+    """
+    if len(plan.to_block) > MAX_APPLY_IDS:
+        return ApplyOutcome(blocked=None, unblocked=None, capped=True)
+
+    blocked: UploadOutcome | None = None
+    if plan.to_block:
+        blocked = await block_artists(session, [pair[0] for pair in plan.to_block])
+
+    unblocked: UploadOutcome | None = None
+    if prune and plan.unlisted:
+        unblocked = await unblock_artists(session, [bid for bid, _name in plan.unlisted])
+
+    return ApplyOutcome(blocked=blocked, unblocked=unblocked, capped=False)

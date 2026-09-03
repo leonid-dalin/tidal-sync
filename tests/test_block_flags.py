@@ -25,7 +25,7 @@ from typer.testing import CliRunner
 from tidal_sync import cli as cli_module
 from tidal_sync.cli import app
 from tidal_sync.domain.results import UploadOutcome
-from tidal_sync.engine.filterlist_apply import ApplyPlan
+from tidal_sync.engine.filterlist_apply import ApplyOutcome, ApplyPlan
 from tidal_sync.engine.filterlist_store import Subscription
 
 runner = CliRunner()
@@ -92,6 +92,20 @@ def _patch_cli_common(
         return UploadOutcome(applied=list(ids), rejected=[])
 
     monkeypatch.setattr(cli_module.curation, "block_artists", _block_artists)
+
+    async def _execute_apply(session: object, plan: ApplyPlan, *, prune: bool) -> ApplyOutcome:
+        if plan.to_block:
+            await _block_artists(session, [tid for tid, _name in plan.to_block])
+        return ApplyOutcome(
+            blocked=UploadOutcome(
+                applied=[tid for tid, _name in plan.to_block],
+                rejected=[],
+            ),
+            unblocked=None,
+            capped=False,
+        )
+
+    monkeypatch.setattr(cli_module, "execute_apply", _execute_apply)
 
     return box
 

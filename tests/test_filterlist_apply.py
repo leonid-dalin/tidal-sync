@@ -13,8 +13,14 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from tidal_sync.domain.results import UploadOutcome
 from tidal_sync.engine import filterlist_apply, filterlist_store
-from tidal_sync.engine.filterlist_apply import MAX_APPLY_IDS, ApplyPlan, plan_apply
+from tidal_sync.engine.filterlist_apply import (
+    MAX_APPLY_IDS,
+    ApplyPlan,
+    execute_apply,
+    plan_apply,
+)
 from tidal_sync.engine.filterlist_store import Subscription
 
 
@@ -62,19 +68,19 @@ def now() -> datetime:
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# Tests for plan_apply
 # ---------------------------------------------------------------------------
 
 
-async def test_dry_run_makes_no_writes(monkeypatch: pytest.MonkeyPatch, now: datetime, store_dir):
+async def test_plan_apply_makes_no_writes(
+    monkeypatch: pytest.MonkeyPatch, now: datetime, store_dir
+):
+    """``plan_apply`` is a pure function: it never calls the curation verbs."""
     subs = [_sub("a", last_fetched=_fresh_iso(now, hours_ago=1))]
     parse = {"a": [("1", "alpha"), ("2", "beta")]}
 
-    # Pin the engine's clock to the test fixture so the timestamp
-    # above is actually fresh.
     monkeypatch.setattr(filterlist_apply, "_now_iso", lambda: now.isoformat())
 
-    # Pre-populate the cache as if a previous fetch wrote it.
     cached = store_dir / "cache"
     cached.mkdir(parents=True, exist_ok=True)
     (cached / "a.txt").write_bytes(b"SUB::a")
@@ -111,13 +117,13 @@ async def test_dry_run_makes_no_writes(monkeypatch: pytest.MonkeyPatch, now: dat
 
     monkeypatch.setattr(filterlist_apply, "parse_filter_list", _parse)
 
-    plan = await plan_apply("session", subs, dry_run=True, prune=False)
+    plan = await plan_apply("session", subs)
 
     assert isinstance(plan, ApplyPlan)
     assert plan.to_block == [("1", "alpha"), ("2", "beta")]
     assert r_block.calls == []
     assert r_unblock.calls == []
-    assert fetch_calls == {}  # fresh, never fetched
+    assert fetch_calls == {}
 
 
 async def test_fetch_error_recorded_but_sibling_continues(
@@ -168,11 +174,10 @@ async def test_fetch_error_recorded_but_sibling_continues(
 
     monkeypatch.setattr(filterlist_apply, "parse_filter_list", _parse)
 
-    plan = await plan_apply("session", subs, dry_run=False, prune=False)
+    plan = await plan_apply("session", subs)
 
     assert plan.errors == [("bad", "boom")]
     assert plan.to_block == [("10", "ten")]
-    assert r_block.calls == [["10"]]
 
 
 async def test_same_id_in_two_lists_appears_once(monkeypatch: pytest.MonkeyPatch, now: datetime):
@@ -218,12 +223,11 @@ async def test_same_id_in_two_lists_appears_once(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(filterlist_apply, "parse_filter_list", _parse)
 
-    plan = await plan_apply("session", subs, dry_run=False, prune=False)
+    plan = await plan_apply("session", subs)
 
     ids = [pair[0] for pair in plan.to_block]
     assert sorted(ids) == ["1", "2", "3"]
     assert ids.count("2") == 1
-    assert r_block.calls == [["1", "2", "3"]]
 
 
 async def test_stale_refetched_fresh_skipped(
@@ -240,8 +244,6 @@ async def test_stale_refetched_fresh_skipped(
 
     monkeypatch.setattr(filterlist_apply, "_now_iso", lambda: now.isoformat())
 
-    # Pre-populate the cache for the fresh list. In production this
-    # file was written by an earlier fetch that set last_fetched.
     cached = tmp_path / "filter_lists" / "cache"
     cached.mkdir(parents=True, exist_ok=True)
     (cached / "fresh.txt").write_bytes(b"SUB::fresh")
@@ -281,7 +283,7 @@ async def test_stale_refetched_fresh_skipped(
 
     monkeypatch.setattr(filterlist_apply, "parse_filter_list", _parse)
 
-    plan = await plan_apply("session", subs, dry_run=False, prune=False)
+    plan = await plan_apply("session", subs)
 
     assert "fresh" not in fetch_calls
     assert fetch_calls["stale"] == 1
@@ -325,11 +327,10 @@ async def test_already_blocked_separated(monkeypatch: pytest.MonkeyPatch, now: d
 
     monkeypatch.setattr(filterlist_apply, "parse_filter_list", _parse)
 
-    plan = await plan_apply("session", subs, dry_run=False, prune=False)
+    plan = await plan_apply("session", subs)
 
     assert plan.already_blocked == [("2", "beta")]
     assert plan.to_block == [("1", "alpha"), ("3", "gamma")]
-    assert r_block.calls == [["1", "3"]]
 
 
 async def test_unlisted_computed(monkeypatch: pytest.MonkeyPatch, now: datetime):
@@ -368,113 +369,10 @@ async def test_unlisted_computed(monkeypatch: pytest.MonkeyPatch, now: datetime)
 
     monkeypatch.setattr(filterlist_apply, "parse_filter_list", _parse)
 
-    plan = await plan_apply("session", subs, dry_run=False, prune=True)
+    plan = await plan_apply("session", subs)
 
     assert plan.unlisted == [("99", "")]
-    assert r_unblock.calls == [["99"]]
-
-
-async def test_prune_true_calls_unblock(monkeypatch: pytest.MonkeyPatch, now: datetime):
-    subs = [_sub("a", last_fetched=_stale_iso(now, hours_ago=99))]
-
-    class _R:
-        def __init__(self) -> None:
-            self.calls: list[list[str]] = []
-
-        async def __call__(self, session, ids):
-            self.calls.append(list(ids))
-            return None
-
-    r_unblock = _R()
-
-    def _fetch(source, fmt, dest):
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(b"SUB::a")
-        return 1
-
-    async def _fetch_blocked(session):
-        return ["50"]
-
-    monkeypatch.setattr(filterlist_apply, "fetch_source", _fetch)
-    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artist_ids", _fetch_blocked)
-    monkeypatch.setattr(filterlist_apply, "block_artists", _R())
-    monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
-    monkeypatch.setattr(filterlist_apply, "parse_filter_list", lambda d, f: [("1", "alpha")])
-
-    await plan_apply("session", subs, dry_run=False, prune=True)
-
-    assert r_unblock.calls == [["50"]]
-
-
-async def test_prune_false_skips_unblock(monkeypatch: pytest.MonkeyPatch, now: datetime):
-    subs = [_sub("a", last_fetched=_stale_iso(now, hours_ago=99))]
-
-    class _R:
-        def __init__(self) -> None:
-            self.calls: list[list[str]] = []
-
-        async def __call__(self, session, ids):
-            self.calls.append(list(ids))
-            return None
-
-    r_unblock = _R()
-
-    def _fetch(source, fmt, dest):
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(b"SUB::a")
-        return 1
-
-    async def _fetch_blocked(session):
-        return ["50"]
-
-    monkeypatch.setattr(filterlist_apply, "fetch_source", _fetch)
-    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artist_ids", _fetch_blocked)
-    monkeypatch.setattr(filterlist_apply, "block_artists", _R())
-    monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
-    monkeypatch.setattr(filterlist_apply, "parse_filter_list", lambda d, f: [("1", "alpha")])
-
-    plan = await plan_apply("session", subs, dry_run=False, prune=False)
-
     assert r_unblock.calls == []
-    assert plan.unlisted == [("50", "")]
-
-
-async def test_max_apply_ids_aborts_without_writing(monkeypatch: pytest.MonkeyPatch, now: datetime):
-    subs = [_sub("a", last_fetched=_stale_iso(now, hours_ago=99))]
-    # Produce MAX_APPLY_IDS + 1 ids to exceed the cap.
-    parse = {"a": [(str(i), f"name{i}") for i in range(MAX_APPLY_IDS + 1)]}
-
-    class _R:
-        def __init__(self) -> None:
-            self.calls: list[list[str]] = []
-
-        async def __call__(self, session, ids):
-            self.calls.append(list(ids))
-            return None
-
-    r_block = _R()
-    r_unblock = _R()
-
-    def _fetch(source, fmt, dest):
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(b"SUB::a")
-        return len(parse["a"])
-
-    async def _fetch_blocked(session):
-        return []
-
-    monkeypatch.setattr(filterlist_apply, "fetch_source", _fetch)
-    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artist_ids", _fetch_blocked)
-    monkeypatch.setattr(filterlist_apply, "block_artists", r_block)
-    monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
-    monkeypatch.setattr(filterlist_apply, "parse_filter_list", lambda d, f: list(parse["a"]))
-
-    plan = await plan_apply("session", subs, dry_run=False, prune=False)
-
-    # Chosen semantics: record an error and return without writing.
-    assert r_block.calls == []
-    assert r_unblock.calls == []
-    assert any("cap" in msg.lower() or "exceeds" in msg.lower() for _, msg in plan.errors)
 
 
 async def test_empty_subscriptions_yields_empty_plan(monkeypatch: pytest.MonkeyPatch):
@@ -498,11 +396,104 @@ async def test_empty_subscriptions_yields_empty_plan(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
     monkeypatch.setattr(filterlist_apply, "parse_filter_list", lambda d, f: [])
 
-    plan = await plan_apply("session", [], dry_run=False, prune=True)
+    plan = await plan_apply("session", [])
 
     assert plan.to_block == []
     assert plan.already_blocked == []
     assert plan.unlisted == []
     assert plan.errors == []
+    assert r_block.calls == []
+    assert r_unblock.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Tests for execute_apply
+# ---------------------------------------------------------------------------
+
+
+async def test_prune_true_calls_unblock(monkeypatch: pytest.MonkeyPatch):
+    """``execute_apply(plan, prune=True)`` calls ``unblock_artists`` on ``plan.unlisted``."""
+    plan = ApplyPlan(
+        to_block=[],
+        already_blocked=[],
+        unlisted=[("50", "")],
+        errors=[],
+    )
+
+    class _R:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        async def __call__(self, session, ids):
+            self.calls.append(list(ids))
+            return UploadOutcome(applied=list(ids), rejected=[])
+
+    r_unblock = _R()
+
+    monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
+
+    outcome = await execute_apply("session", plan, prune=True)
+
+    assert r_unblock.calls == [["50"]]
+    assert outcome.unblocked is not None
+    assert outcome.unblocked.applied == ["50"]
+    assert outcome.capped is False
+
+
+async def test_prune_false_skips_unblock(monkeypatch: pytest.MonkeyPatch):
+    """``execute_apply(plan, prune=False)`` never calls ``unblock_artists``."""
+    plan = ApplyPlan(
+        to_block=[],
+        already_blocked=[],
+        unlisted=[("50", "")],
+        errors=[],
+    )
+
+    class _R:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        async def __call__(self, session, ids):
+            self.calls.append(list(ids))
+            return UploadOutcome(applied=list(ids), rejected=[])
+
+    r_unblock = _R()
+
+    monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
+
+    outcome = await execute_apply("session", plan, prune=False)
+
+    assert r_unblock.calls == []
+    assert outcome.unblocked is None
+
+
+async def test_max_apply_ids_aborts_without_writing(monkeypatch: pytest.MonkeyPatch):
+    """A plan exceeding ``MAX_APPLY_IDS`` returns ``capped=True`` and issues no writes."""
+    plan = ApplyPlan(
+        to_block=[(str(i), f"name{i}") for i in range(MAX_APPLY_IDS + 1)],
+        already_blocked=[],
+        unlisted=[],
+        errors=[],
+    )
+
+    class _R:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        async def __call__(self, session, ids):
+            self.calls.append(list(ids))
+            return UploadOutcome(applied=list(ids), rejected=[])
+
+    r_block = _R()
+    r_unblock = _R()
+
+    monkeypatch.setattr(filterlist_apply, "block_artists", r_block)
+    monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
+
+    outcome = await execute_apply("session", plan, prune=True)
+
+    assert outcome.capped is True
+    assert outcome.blocked is None
+    assert outcome.unblocked is None
     assert r_block.calls == []
     assert r_unblock.calls == []

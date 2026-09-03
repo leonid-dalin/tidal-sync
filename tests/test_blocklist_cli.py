@@ -241,7 +241,6 @@ def test_blocklist_apply_force_skips_unblock_prompt(
         session: object, plan: ApplyPlan, *, unblock_ids: list[str]
     ) -> ApplyOutcome:
         ids = [tid for tid, _name in plan.to_block]
-        unlisted_ids = [tid for tid, _name in plan.unlisted]
         if unblock_ids:
             unblock_calls.append(list(unblock_ids))
             return ApplyOutcome(

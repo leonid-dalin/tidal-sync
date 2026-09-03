@@ -35,36 +35,44 @@ jobs:
         env:
           ACCOUNT_PROFILE: ${{ inputs.account_profile }}
         run: |
-          case '$ACCOUNT_PROFILE' in
-            *[!A-Za-z0-9_.-]*|''|.*)
-              echo '::error::refusing profile name: $ACCOUNT_PROFILE'
+          # Same character set auth.py enforces for profile names. A dispatch
+          # input must never reach a path unvalidated. Double quotes here are
+          # load-bearing: single quotes would compare the literal text.
+          case "$ACCOUNT_PROFILE" in
+            *[!A-Za-z0-9_.-]*|""|.*)
+              echo "::error::refusing profile name: $ACCOUNT_PROFILE"
               exit 1
               ;;
           esac
+
       - name: Materialise the throwaway token
         env:
           ACCOUNT_PROFILE: ${{ inputs.account_profile }}
           TIDAL_LIVE_TOKEN_JSON: ${{ secrets.TIDAL_LIVE_TOKEN_JSON }}
         run: |
           umask 077
-          mkdir -p ~/.tidal_sync
-          printf '%s' '$TIDAL_LIVE_TOKEN_JSON' > '$HOME/.tidal_sync/$ACCOUNT_PROFILE.json'
+          mkdir -p "$HOME/.tidal_sync"
+          printf '%s' "$TIDAL_LIVE_TOKEN_JSON" > "$HOME/.tidal_sync/$ACCOUNT_PROFILE.json"
+
       - name: Run live tests
         env:
           ACCOUNT_PROFILE: ${{ inputs.account_profile }}
           RUN_WRITES: ${{ inputs.run_writes }}
         run: |
           set -o pipefail
-          if [ '$RUN_WRITES' = 'true' ]; then
-            marker='live'
+          if [ "$RUN_WRITES" = "true" ]; then
+            marker="live"
           else
-            marker='live and not write'
+            marker="live and not write"
           fi
-          TIDAL_TEST_PROFILE='$ACCOUNT_PROFILE' \
-            pytest -m '$marker' -p no:cacheprovider -rA 2>&1 | tee live-output.txt
+          TIDAL_TEST_PROFILE="$ACCOUNT_PROFILE" \
+            pytest -m "$marker" -p no:cacheprovider -rA 2>&1 | tee live-output.txt
+
       - name: Report an abuse lock
         if: failure()
         run: |
+          # Only inspected on a failing run, so a passing suite whose test
+          # names mention the word cannot be turned red by this grep.
           if grep -Eqi '11003|abuse' live-output.txt; then
-            echo '::error::the live account abuse lock engaged (1800s); wait before retrying'
+            echo "::error::the live account abuse lock engaged (1800s); wait before retrying"
           fi

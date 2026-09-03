@@ -42,7 +42,7 @@ import typer
 from .cli_prompts import prompt_unblock
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
 from .domain.results import UploadOutcome
-from .engine.filterlist import FormatError
+from .engine.filterlist import FormatError, detect_format
 from .engine.filterlist_apply import ApplyPlan, execute_apply, plan_apply
 from .engine.filterlist_fetch import FetchError, fetch_source
 from .engine.filterlist_store import (
@@ -62,9 +62,6 @@ blocklist_app = typer.Typer(
 )
 
 
-_SUPPORTED_FORMATS: tuple[str, ...] = ("txt", "csv", "json")
-
-
 def _report_store_error(exc: StoreError) -> None:
     """Print the standard unreadable-store message and exit 1."""
     from .cli import console
@@ -76,14 +73,6 @@ def _report_store_error(exc: StoreError) -> None:
         "  [dim]fix or delete subscriptions.json, then retry.[/dim]"
     )
     raise typer.Exit(1) from exc
-
-
-def _detect_format(source: str) -> str:
-    """Return the lowercase extension of ``source``, with no leading dot."""
-    dot = source.rfind(".")
-    if dot == -1 or dot == len(source) - 1:
-        raise FormatError(f"cannot detect format: source {source!r} has no extension")
-    return source[dot + 1 :].lower()
 
 
 def _now_iso() -> str:
@@ -148,14 +137,15 @@ def add(
     from .cli import console
 
     try:
-        fmt = _detect_format(source)
-        if fmt not in _SUPPORTED_FORMATS:
-            raise FormatError(f"unsupported filter-list format: {fmt!r}")
+        fmt = detect_format(source)
         count = fetch_source(source, fmt, cache_path(name, fmt))
     except FormatError as exc:
         console.print(f"[bold red]Refused subscription:[/bold red] {exc}")
         raise typer.Exit(1) from exc
     except FetchError as exc:
+        console.print(f"[bold red]Refused subscription:[/bold red] {exc}")
+        raise typer.Exit(1) from exc
+    except ValueError as exc:
         console.print(f"[bold red]Refused subscription:[/bold red] {exc}")
         raise typer.Exit(1) from exc
 

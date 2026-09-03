@@ -45,7 +45,7 @@ from .engine.exporter import (
     export_user_favourites_to_disk,
     export_user_playlists_to_disk,
 )
-from .engine.filterlist import FormatError, parse_filter_list
+from .engine.filterlist import FormatError, detect_format
 from .engine.filterlist_apply import execute_apply, plan_apply
 from .engine.filterlist_store import StoreError, Subscription, load_subscriptions
 from .engine.importer import import_collection_from_disk
@@ -307,6 +307,11 @@ def _unlike_verb(kind: FavoriteKind) -> Any:
 # else.
 _BLOCK_RAIL_THRESHOLD = 10
 
+# Single fixed name for the synthetic subscription built from ``--all-from``:
+# the same value across invocations keeps one cache entry instead of
+# accumulating ``one-off-<filename>`` files in the store.
+_ONE_OFF_NAME = "one-off"
+
 
 def _run_block_command(
     *,
@@ -389,21 +394,17 @@ def _resolve_block_lists(
             raise typer.Exit(1)
         subs.append(found[0])
     if all_from is not None:
-        dot = str(all_from).rfind(".")
-        if dot == -1 or dot == len(str(all_from)) - 1:
-            console.print(f"[bold red]Unsupported filter-list format:[/bold red] {all_from}")
-            raise typer.Exit(1)
-        fmt = str(all_from)[dot + 1 :].lower()
         try:
-            # Probe so an unsupported extension is reported through the
-            # same FormatError path as the store, before any write.
-            parse_filter_list(b"# probe", fmt)
+            fmt = detect_format(str(all_from))
         except FormatError as exc:
             console.print(f"[bold red]{exc}[/bold red]")
             raise typer.Exit(1) from exc
+        if not all_from.is_file():
+            console.print(f"[bold red]No such file:[/bold red] {all_from}")
+            raise typer.Exit(1)
         subs.append(
             Subscription(
-                name=f"one-off-{all_from.name}",
+                name=_ONE_OFF_NAME,
                 source=str(all_from),
                 format=fmt,
                 last_fetched=None,

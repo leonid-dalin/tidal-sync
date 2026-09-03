@@ -52,6 +52,7 @@ from .engine.filterlist_store import (
     cache_path,
     load_subscriptions,
     remove_subscription,
+    save_subscriptions,
 )
 
 blocklist_app = typer.Typer(
@@ -200,15 +201,17 @@ def update(
     from .cli import console
 
     try:
-        subs = load_subscriptions()
+        all_subs = load_subscriptions()
     except StoreError as exc:
         _report_store_error(exc)
         return  # _report_store_error raises; the return keeps mypy quiet
     if name is not None:
-        subs = [s for s in subs if s.name]
+        subs = [s for s in all_subs if s.name == name]
         if not subs:
             console.print(f"[bold red]No such subscription:[/bold red] {name}")
             raise typer.Exit(1)
+    else:
+        subs = all_subs
 
     if not subs:
         console.print("[yellow]No subscriptions to update.[/yellow]")
@@ -225,11 +228,12 @@ def update(
         except FetchError as exc:
             sub.last_error = str(exc)
             had_errors = True
-        add_subscription(sub)
         console.print(
             f"  [cyan]{sub.name}[/cyan] last_count={sub.last_count}"
             + (f" [red]error={sub.last_error}[/red]" if sub.last_error else "")
         )
+
+    save_subscriptions(all_subs)
 
     if had_errors:
         raise typer.Exit(1)

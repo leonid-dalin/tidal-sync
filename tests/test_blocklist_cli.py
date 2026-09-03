@@ -702,3 +702,66 @@ def test_confirming_the_rail_blocks_exactly_once(
         "511",
     ]
     assert box["unblock_calls"] == [], "without --prune the rail must not trigger any unblock"
+
+
+# ---------------------------------------------------------------------------
+# Tests for the update-name defect.
+#
+# Background: the parent found that ``blocklist update <name>`` ran
+# the identity filter ``[s for s in subs if s.name]``, so ``update
+# nosuchname`` refetched every subscription and exited 0. The loop
+# also rewrote the whole index on every iteration. These tests pin
+# the fix: an unknown name exits 1 with no fetches, and a named
+# update refetches only that subscription.
+# ---------------------------------------------------------------------------
+
+
+def test_update_unknown_name_exits_one_and_fetches_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An unknown subscription name must exit 1 without refetching anything."""
+    from tidal_sync.engine import filterlist_store
+
+    monkeypatch.setattr(filterlist_store, "STORE_DIR", tmp_path / "filter_lists")
+    source = tmp_path / "a.txt"
+    source.write_text("111\n", encoding="utf-8")
+    filterlist_store.add_subscription(
+        filterlist_store.Subscription(name="alpha", source=str(source), format="txt")
+    )
+
+    fetched: list[str] = []
+    monkeypatch.setattr(
+        cli_blocklist, "fetch_source", lambda src, fmt, dest: fetched.append(src) or 0
+    )
+
+    result = runner.invoke(app, ["blocklist", "update", "nosuchname"])
+
+    assert result.exit_code == 1
+    assert "No such subscription" in result.output
+    assert fetched == []
+
+
+def test_update_named_subscription_touches_only_that_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Naming one subscription must not refetch its siblings."""
+    from tidal_sync.engine import filterlist_store
+
+    monkeypatch.setattr(filterlist_store, "STORE_DIR", tmp_path / "filter_lists")
+    for name in ("alpha", "beta"):
+        source = tmp_path / f"{name}.txt"
+        source.write_text("111\n", encoding="utf-8")
+        filterlist_store.add_subscription(
+            filterlist_store.Subscription(name=name, source=str(source), format="txt")
+        )
+
+    fetched: list[str] = []
+    monkeypatch.setattr(
+        cli_blocklist, "fetch_source", lambda src, fmt, dest: fetched.append(src) or 0
+    )
+
+    result = runner.invoke(app, ["blocklist", "update", "alpha"])
+
+    assert result.exit_code == 0
+    assert len(fetched) == 1
+    assert fetched[0].endswith("alpha.txt")

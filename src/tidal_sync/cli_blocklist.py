@@ -251,7 +251,12 @@ async def _run_apply(
             console.print("[red]Confirmation did not match. Aborting.[/red]")
             raise typer.Exit(1)
 
-    outcome = await execute_apply(session, plan, prune=prune)
+    if prune:
+        unblock_ids = [tid for tid, _name in plan.unlisted]
+    else:
+        unblock_ids = prompt_unblock(plan.unlisted, force=force) if plan.unlisted else []
+
+    outcome = await execute_apply(session, plan, unblock_ids=unblock_ids)
 
     if outcome.capped:
         console.print(
@@ -260,42 +265,22 @@ async def _run_apply(
         )
         raise typer.Exit(1)
 
-    if outcome.blocked is not None:
-        assert outcome.blocked is not None
-        blocked_outcome: UploadOutcome = outcome.blocked
-        for tid in blocked_outcome.applied:
-            console.print(f"  [green]Blocked artist {tid}[/green]")
-        for tid in blocked_outcome.rejected:
-            console.print(f"  [red]block failed {tid}[/red]")
-        if blocked_outcome.rejected:
-            raise typer.Exit(1)
+    failed = _report_outcome(outcome.blocked, "Blocked artist", "block failed")
+    failed += _report_outcome(outcome.unblocked, "unblock", "unblock failed")
 
-    # Under --prune the engine already unblocked plan.unlisted, so
-    # re-offering it would ask the operator to confirm a decision
-    # already taken. The prompt is skipped in that case.
-    if not prune and plan.unlisted:
-        picked = prompt_unblock(plan.unlisted, force=force)
-        if picked:
-            from .engine.curation import unblock_artists
-
-            unblock_outcome = await unblock_artists(session, picked)
-            for tid in unblock_outcome.applied:
-                console.print(f"  [green]unblock {tid}[/green]")
-            for tid in unblock_outcome.rejected:
-                console.print(f"  [red]unblock failed {tid}[/red]")
-            if unblock_outcome.rejected:
-                raise typer.Exit(1)
-    elif prune and outcome.unblocked is not None:
-        unblock_outcome = outcome.unblocked
-        for tid in unblock_outcome.applied:
-            console.print(f"  [green]unblock {tid}[/green]")
-        for tid in unblock_outcome.rejected:
-            console.print(f"  [red]unblock failed {tid}[/red]")
-        if unblock_outcome.rejected:
-            raise typer.Exit(1)
-
-    if plan.errors:
+    if failed or plan.errors:
         raise typer.Exit(1)
+
+
+def _report_outcome(outcome: UploadOutcome | None, applied: str, rejected: str) -> int:
+    """Single reporter for both directions so block and unblock output cannot diverge."""
+    if outcome is None:
+        return 0
+    for tid in outcome.applied:
+        console.print(f"  [green]{applied} {tid}[/green]")
+    for tid in outcome.rejected:
+        console.print(f"  [red]{rejected} {tid}[/red]")
+    return len(outcome.rejected)
 
 
 @blocklist_app.command(name="apply")

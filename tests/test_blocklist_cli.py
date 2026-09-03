@@ -154,7 +154,9 @@ def test_blocklist_apply_exits_one_when_to_block_has_rejections(
     monkeypatch.setattr(cli_blocklist, "plan_apply", _plan_apply)
     monkeypatch.setattr(cli_blocklist, "prompt_unblock", lambda candidates, *, force: [])
 
-    async def _execute_apply(session: object, plan: ApplyPlan, *, prune: bool) -> ApplyOutcome:
+    async def _execute_apply(
+        session: object, plan: ApplyPlan, *, unblock_ids: list[str]
+    ) -> ApplyOutcome:
         ids = [tid for tid, _name in plan.to_block]
         return ApplyOutcome(
             blocked=UploadOutcome(applied=ids[:1], rejected=ids[1:]),
@@ -190,7 +192,9 @@ def test_blocklist_apply_dry_run_makes_no_writes(
     monkeypatch.setattr(cli_blocklist, "plan_apply", _plan_apply)
     monkeypatch.setattr(cli_blocklist, "prompt_unblock", lambda candidates, *, force: [])
 
-    async def _execute_apply(session: object, plan: ApplyPlan, *, prune: bool) -> ApplyOutcome:
+    async def _execute_apply(
+        session: object, plan: ApplyPlan, *, unblock_ids: list[str]
+    ) -> ApplyOutcome:
         ids = [tid for tid, _name in plan.to_block]
         block_calls.append(list(ids))
         return ApplyOutcome(
@@ -233,14 +237,16 @@ def test_blocklist_apply_force_skips_unblock_prompt(
 
     monkeypatch.setattr(cli_blocklist, "prompt_unblock", _prompt_unblock)
 
-    async def _execute_apply(session: object, plan: ApplyPlan, *, prune: bool) -> ApplyOutcome:
+    async def _execute_apply(
+        session: object, plan: ApplyPlan, *, unblock_ids: list[str]
+    ) -> ApplyOutcome:
         ids = [tid for tid, _name in plan.to_block]
         unlisted_ids = [tid for tid, _name in plan.unlisted]
-        if prune and unlisted_ids:
-            unblock_calls.append(list(unlisted_ids))
+        if unblock_ids:
+            unblock_calls.append(list(unblock_ids))
             return ApplyOutcome(
                 blocked=UploadOutcome(applied=list(ids), rejected=[]),
-                unblocked=UploadOutcome(applied=list(unlisted_ids), rejected=[]),
+                unblocked=UploadOutcome(applied=list(unblock_ids), rejected=[]),
                 capped=False,
             )
         return ApplyOutcome(
@@ -663,7 +669,9 @@ def _execute_apply_through(box: dict[str, list[list[str]]]):
     print and exit logic runs as in production.
     """
 
-    async def _execute_apply(session: object, plan: ApplyPlan, *, prune: bool) -> ApplyOutcome:
+    async def _execute_apply(
+        session: object, plan: ApplyPlan, *, unblock_ids: list[str]
+    ) -> ApplyOutcome:
         from tidal_sync.domain.results import UploadOutcome as _UO
         from tidal_sync.engine.filterlist_apply import (
             MAX_APPLY_IDS,
@@ -679,9 +687,9 @@ def _execute_apply_through(box: dict[str, list[list[str]]]):
             blocked = _UO(applied=[tid for tid, _ in plan.to_block], rejected=[])
             box["block_calls"].append([tid for tid, _ in plan.to_block])
         unblocked = None
-        if prune and plan.unlisted:
-            unblocked = _UO(applied=[tid for tid, _ in plan.unlisted], rejected=[])
-            box["unblock_calls"].append([tid for tid, _ in plan.unlisted])
+        if unblock_ids:
+            unblocked = _UO(applied=list(unblock_ids), rejected=[])
+            box["unblock_calls"].append(list(unblock_ids))
         return _AO(blocked=blocked, unblocked=unblocked, capped=False)
 
     return _execute_apply

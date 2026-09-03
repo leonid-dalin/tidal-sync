@@ -449,7 +449,7 @@ def _run_block_with_lists(
             console.print("[red]Confirmation did not match. Aborting.[/red]")
             raise typer.Exit(1)
 
-    list_outcome = asyncio.run(execute_apply(session, plan, prune=False))
+    list_outcome = asyncio.run(execute_apply(session, plan, unblock_ids=[]))
 
     if list_outcome.capped:
         console.print(

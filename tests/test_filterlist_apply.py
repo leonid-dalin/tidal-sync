@@ -429,8 +429,8 @@ async def test_empty_subscriptions_yields_empty_plan(monkeypatch: pytest.MonkeyP
 # ---------------------------------------------------------------------------
 
 
-async def test_prune_true_calls_unblock(monkeypatch: pytest.MonkeyPatch):
-    """``execute_apply(plan, prune=True)`` calls ``unblock_artists`` on ``plan.unlisted``."""
+async def test_unblock_ids_are_passed_through(monkeypatch: pytest.MonkeyPatch):
+    """``execute_apply(plan, unblock_ids=[...])`` calls ``unblock_artists`` on those ids."""
     plan = ApplyPlan(
         to_block=[],
         already_blocked=[],
@@ -450,7 +450,7 @@ async def test_prune_true_calls_unblock(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
 
-    outcome = await execute_apply("session", plan, prune=True)
+    outcome = await execute_apply("session", plan, unblock_ids=["50"])
 
     assert r_unblock.calls == [["50"]]
     assert outcome.unblocked is not None
@@ -458,8 +458,8 @@ async def test_prune_true_calls_unblock(monkeypatch: pytest.MonkeyPatch):
     assert outcome.capped is False
 
 
-async def test_prune_false_skips_unblock(monkeypatch: pytest.MonkeyPatch):
-    """``execute_apply(plan, prune=False)`` never calls ``unblock_artists``."""
+async def test_empty_unblock_ids_issue_no_call(monkeypatch: pytest.MonkeyPatch):
+    """``execute_apply(plan, unblock_ids=[])`` never calls ``unblock_artists``."""
     plan = ApplyPlan(
         to_block=[],
         already_blocked=[],
@@ -479,7 +479,7 @@ async def test_prune_false_skips_unblock(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
 
-    outcome = await execute_apply("session", plan, prune=False)
+    outcome = await execute_apply("session", plan, unblock_ids=[])
 
     assert r_unblock.calls == []
     assert outcome.unblocked is None
@@ -508,7 +508,7 @@ async def test_max_apply_ids_aborts_without_writing(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(filterlist_apply, "block_artists", r_block)
     monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
 
-    outcome = await execute_apply("session", plan, prune=True)
+    outcome = await execute_apply("session", plan, unblock_ids=[])
 
     assert outcome.capped is True
     assert outcome.blocked is None

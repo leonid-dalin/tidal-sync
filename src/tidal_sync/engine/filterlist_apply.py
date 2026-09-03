@@ -204,17 +204,19 @@ async def execute_apply(
     session: tidalapi.Session,
     plan: ApplyPlan,
     *,
-    prune: bool,
+    unblock_ids: list[str],
 ) -> ApplyOutcome:
     """Apply a previously computed ``ApplyPlan`` to Tidal.
 
-    The cap is enforced before any write: exceeding
-    ``MAX_APPLY_IDS`` returns an ``ApplyOutcome`` with ``capped=True``
-    and both outcomes ``None`` so the CLI can surface the abort
-    without issuing a partial block. With the cap honoured the
-    block call is made only if there is something to block, and the
-    unblock call only when ``prune`` is set and there is something
-    to unblock.
+    The cap is enforced before any write: exceeding ``MAX_APPLY_IDS``
+    returns ``capped=True`` with both outcomes ``None`` so the caller can
+    surface the abort without a partial block.
+
+    ``unblock_ids`` is the caller's decision, not the engine's. Passing an
+    explicit list rather than a ``prune`` flag is what makes "this engine
+    never unblocks on its own initiative" a property of the signature
+    instead of a comment: there is no value of any argument that makes it
+    choose.
     """
     if len(plan.to_block) > MAX_APPLY_IDS:
         return ApplyOutcome(blocked=None, unblocked=None, capped=True)
@@ -224,7 +226,7 @@ async def execute_apply(
         blocked = await block_artists(session, [pair[0] for pair in plan.to_block])
 
     unblocked: UploadOutcome | None = None
-    if prune and plan.unlisted:
-        unblocked = await unblock_artists(session, [bid for bid, _name in plan.unlisted])
+    if unblock_ids:
+        unblocked = await unblock_artists(session, unblock_ids)
 
     return ApplyOutcome(blocked=blocked, unblocked=unblocked, capped=False)

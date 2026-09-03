@@ -270,6 +270,65 @@ def _clean_row(row: dict[Any, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def parse_csv_text[T: BaseModel](content: str, model_class: type[T], label: str) -> list[T]:
+    """
+    Validate already-decoded CSV text into typed rows.
+
+    ``label`` names the source in any raised error. Split out of
+    ``parse_csv`` so an in-memory body does not have to be written to a
+    temporary file just to be read back.
+    """
+    if not content.strip():
+        raise BackupFileError(f"{label}: file is empty")
+
+    reader = csv.DictReader(io.StringIO(content))
+    if not reader.fieldnames:
+        raise BackupFileError(f"{label}: no CSV header row found")
+
+    items: list[T] = []
+    total = 0
+    dropped = 0
+
+    for row in reader:
+        total += 1
+        try:
+            cleaned_row = _clean_row(row)
+            model = model_class(**cleaned_row)
+            items.append(model)
+        except ValidationError as e:
+            dropped += 1
+            logger.warning(
+                "Dropped CSV row (line {line}): {detail}",
+                line=reader.line_num,
+                detail=_summarise_validation_error(e),
+                file=label,
+            )
+        except Exception as e:
+            dropped += 1
+            logger.warning(
+                "Dropped CSV row (line {line}): unexpected error {error}",
+                line=reader.line_num,
+                error=str(e),
+                file=label,
+            )
+
+    if dropped:
+        logger.warning(
+            "CSV import incomplete: dropped {dropped} of {total} rows from {file}",
+            dropped=dropped,
+            total=total,
+            file=label,
+        )
+
+    if not items:
+        raise BackupFileError(
+            f"{label}: no valid rows for {model_class.__name__}; "
+            "check the header names and the source export"
+        )
+
+    return items
+
+
 def parse_csv[T: BaseModel](file_path: Path, model_class: type[T]) -> list[T]:
     """
     Reads, decodes, and validates a CSV file into strongly typed objects.
@@ -287,8 +346,6 @@ def parse_csv[T: BaseModel](file_path: Path, model_class: type[T]) -> list[T]:
     Returns:
         list[T]: A list of validated model instances.
     """
-    items: list[T] = []
-
     encodings = ["utf-8-sig", "cp1252", "latin-1"]
     content = ""
 
@@ -305,51 +362,4 @@ def parse_csv[T: BaseModel](file_path: Path, model_class: type[T]) -> list[T]:
 
     # Every fallback encoding accepts nearly any byte sequence, so a corrupt
     # file decodes to garbage instead of raising.
-    if not content.strip():
-        raise BackupFileError(f"{file_path.name}: file is empty")
-
-    reader = csv.DictReader(io.StringIO(content))
-    total = 0
-    dropped = 0
-
-    if not reader.fieldnames:
-        raise BackupFileError(f"{file_path.name}: no CSV header row found")
-
-    for row in reader:
-        total += 1
-        try:
-            cleaned_row = _clean_row(row)
-            model = model_class(**cleaned_row)
-            items.append(model)
-        except ValidationError as e:
-            dropped += 1
-            logger.warning(
-                "Dropped CSV row (line {line}): {detail}",
-                line=reader.line_num,
-                detail=_summarise_validation_error(e),
-                file=file_path.name,
-            )
-        except Exception as e:
-            dropped += 1
-            logger.warning(
-                "Dropped CSV row (line {line}): unexpected error {error}",
-                line=reader.line_num,
-                error=str(e),
-                file=file_path.name,
-            )
-
-    if dropped:
-        logger.warning(
-            "CSV import incomplete: dropped {dropped} of {total} rows from {file}",
-            dropped=dropped,
-            total=total,
-            file=file_path.name,
-        )
-
-    if not items:
-        raise BackupFileError(
-            f"{file_path.name}: no valid rows for {model_class.__name__}; "
-            "check the header names and the source export"
-        )
-
-    return items
+    return parse_csv_text(content, model_class, file_path.name)

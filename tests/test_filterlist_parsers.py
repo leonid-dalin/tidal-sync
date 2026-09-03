@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from tidal_sync.engine.filterlist import FormatError, parse_filter_list
+from tidal_sync.engine.filterlist import (
+    SUPPORTED_FORMATS,
+    FormatError,
+    detect_format,
+    parse_filter_list,
+)
 
 TXT_FORMATS = ("txt", "TXT")
 CSV_FORMATS = ("csv", "CSV")
@@ -143,3 +148,74 @@ def test_dispatch_unsupported_format_raises_format_error() -> None:
     """An unsupported format hint raises FormatError at parse time."""
     with pytest.raises(FormatError):
         parse_filter_list(b"4894212\n", "xml")
+
+
+# ---------------------------------------------------------------------------
+# parser error boundary (Task 7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("data", "fmt"),
+    [
+        (b"not json", "json"),
+        (b"# probe", "json"),
+        (b"\xff\xfe\x00bad", "txt"),
+        (b"", "csv"),
+        (b"artist_name,tidal_id\n", "csv"),
+    ],
+)
+def test_every_malformed_payload_raises_format_error(data: bytes, fmt: str) -> None:
+    """FormatError is the documented failure mode; nothing else may escape.
+
+    plan_apply isolates one bad subscription from its siblings by catching
+    FormatError. Any other exception type escapes that handler and takes
+    the whole run down.
+    """
+    with pytest.raises(FormatError):
+        parse_filter_list(data, fmt)
+
+
+@pytest.mark.parametrize("fmt", ["txt", "csv", "json"])
+def test_ids_are_validated_in_every_format(fmt: str) -> None:
+    """A non-numeric id must be refused whichever format carried it.
+
+    unblock_artists interpolates an id into the request path, so an
+    unvalidated id from a third-party list reaches a URL.
+    """
+    payloads = {
+        "txt": b"../../evil\n",
+        "csv": b"artist_name,tidal_id\nEvil,../../evil\n",
+        "json": b'["../../evil"]',
+    }
+    with pytest.raises(FormatError):
+        parse_filter_list(payloads[fmt], fmt)
+
+
+def test_txt_tolerates_a_utf8_bom() -> None:
+    """A list saved by a Windows editor starts with a BOM.
+
+    This project's own CSV exporter writes utf-8-sig, so a blocked-artists
+    export is the most likely first filter list a user subscribes to.
+    """
+    assert parse_filter_list(b"\xef\xbb\xbf4894212\n", "txt") == [("4894212", "")]
+
+
+def test_detect_format_reads_path_not_query_string() -> None:
+    """A cache-busting query string must not change the detected format.
+
+    ``urlparse`` splits the URL at the ``?`` so the extension is read
+    from the path only. The format hint the parser sees is the same
+    whether or not the operator pinned a version.
+    """
+    assert detect_format("https://example.com/list.txt?v=2") == "txt"
+
+
+def test_supported_formats_lists_every_parser() -> None:
+    """``SUPPORTED_FORMATS`` is the single source of truth.
+
+    The dispatch table, the CLI's ``--from-list`` flag, and the test
+    parametrisation all read from it; a parser that is not in the tuple
+    cannot be invoked by name.
+    """
+    assert set(SUPPORTED_FORMATS) == {"txt", "csv", "json"}

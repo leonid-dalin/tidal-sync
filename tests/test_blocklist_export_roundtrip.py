@@ -30,8 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from tidal_sync.domain.exceptions import BackupFileError
-from tidal_sync.engine.filterlist import parse_filter_list
+from tidal_sync.engine.filterlist import FormatError, parse_filter_list
 from tidal_sync.engine.parser import write_artists_csv_sync
 
 
@@ -85,9 +84,9 @@ def test_empty_blocklist_writes_header_only(tmp_path: Path) -> None:
     """An empty blocklist still writes a valid header that fails to parse.
 
     ``write_artists_csv_sync`` writes the BOM and header row but no data rows.
-    ``parse_csv`` raises ``BackupFileError`` on a file with zero valid rows, so
-    an empty blocklist cannot round trip. That is preserved behaviour: the
-    exporter is not modified and the parser is not modified.
+    The filter-list parser converts the empty-body ``BackupFileError`` from
+    the CSV reader into its own ``FormatError`` at the parse boundary, so an
+    empty export cannot round trip. The exporter is not modified.
     """
     path = tmp_path / "Blocked Artists.csv"
     written = write_artists_csv_sync(path, [])
@@ -97,7 +96,7 @@ def test_empty_blocklist_writes_header_only(tmp_path: Path) -> None:
     assert text == "artist_name,tidal_id\n"
     assert path.read_bytes()[:3] == b"\xef\xbb\xbf"
 
-    with pytest.raises(BackupFileError):
+    with pytest.raises(FormatError):
         parse_filter_list(path.read_bytes(), "csv")
 
 

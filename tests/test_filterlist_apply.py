@@ -80,7 +80,7 @@ async def test_plan_apply_makes_no_writes(
     subs = [_sub("a", last_fetched=_fresh_iso(now, hours_ago=1))]
     parse = {"a": [("1", "alpha"), ("2", "beta")]}
 
-    monkeypatch.setattr(filterlist_apply, "_now_iso", lambda: now.isoformat())
+    monkeypatch.setattr(filterlist_apply, "now_iso", lambda: now.isoformat())
 
     cached = store_dir / "cache"
     cached.mkdir(parents=True, exist_ok=True)
@@ -243,7 +243,7 @@ async def test_stale_refetched_fresh_skipped(
     ]
     parse = {"fresh": [], "stale": [("5", "five")], "never": [("7", "seven")]}
 
-    monkeypatch.setattr(filterlist_apply, "_now_iso", lambda: now.isoformat())
+    monkeypatch.setattr(filterlist_apply, "now_iso", lambda: now.isoformat())
 
     cached = tmp_path / "filter_lists" / "cache"
     cached.mkdir(parents=True, exist_ok=True)
@@ -544,7 +544,7 @@ async def test_a_missing_cache_file_is_a_recorded_error_not_a_crash(
         _sub("good", last_fetched=fresh_ts),
     ]
 
-    monkeypatch.setattr(filterlist_apply, "_now_iso", lambda: now.isoformat())
+    monkeypatch.setattr(filterlist_apply, "now_iso", lambda: now.isoformat())
 
     # The "good" subscription has a real cache; "gone" does not. The
     # autouse ``store_dir`` fixture already pointed STORE_DIR at

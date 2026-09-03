@@ -35,17 +35,6 @@ console = Console()
 BLOCK_RAIL_THRESHOLD = 10
 
 
-def now_iso() -> str:
-    """The current UTC time as an ISO string.
-
-    Lives here because both the CLI and the engine want a UTC
-    timestamp and neither owns the concept.
-    """
-    from datetime import UTC, datetime
-
-    return datetime.now(UTC).isoformat()
-
-
 def _report_outcome(outcome: UploadOutcome | None, applied: str, rejected: str) -> int:
     """Single reporter for both directions so block and unblock output cannot diverge."""
     if outcome is None:

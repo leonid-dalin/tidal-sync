@@ -36,11 +36,10 @@ plan; it owns the cap check and the calls to ``block_artists`` and
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 import tidalapi
 
-from ..cli_shared import now_iso
 from ..domain.results import UploadOutcome
 
 # Imported here so tests can monkeypatch by attribute. The real
@@ -60,9 +59,16 @@ from .filterlist_store import Subscription, cache_path
 MAX_APPLY_IDS: int = 5000
 
 
-def _now_iso() -> str:
-    """Local indirection over ``now_iso`` so tests can monkeypatch a deterministic clock."""
-    return now_iso()
+def now_iso() -> str:
+    """The current UTC time as an ISO string.
+
+    Lives in the engine because ``_is_stale`` is the only caller that
+    reasons about the value; the CLI merely stamps a record with it and
+    reaches down for it, which is the direction the layering allows.
+    A module-level function so tests can monkeypatch a deterministic
+    clock without the engine importing time itself.
+    """
+    return datetime.now(UTC).isoformat()
 
 
 @dataclass
@@ -128,7 +134,7 @@ async def plan_apply(
     the CLI honest: there is no path through the engine that bypasses
     the CLI's confirmation prompt.
     """
-    now_iso = _now_iso()
+    stamp = now_iso()
 
     errors: list[tuple[str, str]] = []
     union_pairs: list[tuple[str, str]] = []
@@ -141,7 +147,7 @@ async def plan_apply(
     for sub in subscriptions:
         try:
             dest = cache_path(sub.name, sub.format)
-            if _is_stale(sub, now_iso):
+            if _is_stale(sub, stamp):
                 fetch_source(sub.source, sub.format, dest)
             pairs = parse_filter_list(dest.read_bytes(), sub.format)
         except (FetchError, FormatError, OSError, ValueError) as exc:

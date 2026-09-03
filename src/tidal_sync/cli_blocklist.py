@@ -41,10 +41,16 @@ import typer
 
 from .auth import get_session
 from .cli_prompts import prompt_unblock
-from .cli_shared import BLOCK_RAIL_THRESHOLD, _report_outcome, console, now_iso
+from .cli_shared import BLOCK_RAIL_THRESHOLD, _report_outcome, console
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
 from .engine.filterlist import FormatError, detect_format
-from .engine.filterlist_apply import MAX_APPLY_IDS, ApplyPlan, execute_apply, plan_apply
+from .engine.filterlist_apply import (
+    MAX_APPLY_IDS,
+    ApplyPlan,
+    execute_apply,
+    now_iso,
+    plan_apply,
+)
 from .engine.filterlist_fetch import FetchError, fetch_source
 from .engine.filterlist_store import (
     StoreError,

@@ -34,8 +34,8 @@ from typing import Any
 
 import pytest
 
-from tidal_sync.engine.curation import fetch_blocked_artist_ids
 from tidal_sync.auth import get_session
+from tidal_sync.engine.curation import fetch_blocked_artist_ids
 
 pytestmark = pytest.mark.live
 

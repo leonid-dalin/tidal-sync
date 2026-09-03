@@ -13,16 +13,6 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-from __future__ import annotations
-
-import os
-from typing import Any
-
-import pytest
-
-from tidal_sync.auth import get_session
-
-
 """Fixtures for the live suite.
 
 The account profile is read from TIDAL_TEST_PROFILE, which is the name the
@@ -31,6 +21,15 @@ error, never a skip: a suite that skips on a bad token reports green for
 the one condition it exists to detect, and pytest exits 0 when everything
 skips.
 """
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import pytest
+
+from tidal_sync.auth import get_session
 
 
 @pytest.fixture(scope="session")
@@ -44,7 +43,7 @@ def live_profile() -> str:
 
 @pytest.fixture(scope="session")
 def session(live_profile: str) -> Any:
-    """An authenticated session, failing hard rather than skipping on a bad token."""
+    """An authenticated session, failing outright rather than skipping on a bad token."""
     sess = get_session(live_profile)
     if sess.user is None:
         pytest.fail(f"profile {live_profile!r} did not authenticate; the stored token is stale")

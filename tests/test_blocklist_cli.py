@@ -293,6 +293,47 @@ def test_an_oversized_prune_is_refused_without_a_traceback(
     assert str(MAX_APPLY_IDS) in result.output
 
 
+# Test 6b: one id to block and an oversized unblock set. The block batch is
+# small enough to pass its own leaf guard, so without the up-front check it
+# goes out before the unblock guard fires.
+
+
+def test_an_oversized_second_batch_blocks_the_first_one_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tidal_sync.engine.curation import MAX_APPLY_IDS
+
+    written: list[list[str]] = []
+
+    monkeypatch.setattr(
+        cli_blocklist, "load_subscriptions", lambda: [fake_subscription(name="spam")]
+    )
+    monkeypatch.setattr(cli_blocklist, "get_session", lambda profile="default": FakeSession())
+
+    async def _plan_apply(session: object, subs: list[Subscription], **_: object) -> ApplyPlan:
+        return ApplyPlan(
+            to_block=[("111", "Alpha")],
+            already_blocked=[],
+            unlisted=[(str(400000 + i), "") for i in range(MAX_APPLY_IDS + 1)],
+            errors=[],
+        )
+
+    async def _apply_per_id(ids: list[str], action: object, label: str) -> UploadOutcome:
+        written.append(list(ids))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    monkeypatch.setattr(cli_blocklist, "plan_apply", _plan_apply)
+    monkeypatch.setattr(curation, "_apply_per_id", _apply_per_id)
+
+    result = runner.invoke(app, ["blocklist", "apply", "--prune", "--force"])
+
+    assert result.exit_code == 1, result.output
+    assert written == [], (
+        f"the small block batch must not go out ahead of the oversized one, got {written}"
+    )
+    assert "could not complete" in result.output
+
+
 # Test 7: an unsupported extension is rejected at add, not at apply.
 def test_blocklist_add_rejects_unsupported_extension_at_add_time(
     monkeypatch: pytest.MonkeyPatch,

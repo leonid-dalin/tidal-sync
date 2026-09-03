@@ -46,6 +46,7 @@ from ..domain.results import UploadOutcome
 # implementations are used unchanged; nothing in this module redefines
 # the curation verbs or ``parse_filter_list``.
 from .curation import (
+    _refuse_oversized_batch,
     block_artists,
     fetch_blocked_artists_named,
     unblock_artists,
@@ -208,7 +209,9 @@ async def execute_apply(
 
     The batch ceiling is enforced inside ``block_artists`` itself, so
     exceeding it raises ``BatchTooLarge`` here rather than returning a
-    capped outcome.
+    capped outcome. Both batches are checked up front, because this is
+    the one caller that issues two and the exception promises that
+    nothing was written.
 
     ``unblock_ids`` is the caller's decision, not the engine's. Passing an
     explicit list rather than a ``prune`` flag is what makes "this engine
@@ -216,6 +219,14 @@ async def execute_apply(
     instead of a comment: there is no value of any argument that makes it
     choose.
     """
+    # Both batches are known before either write, so refuse the whole plan
+    # here. The leaf guards fire per verb, which is one guard too late for
+    # the only caller that issues two batches: the unblock guard would run
+    # after the block batch had already gone out, contradicting the
+    # exception's promise that nothing was written.
+    _refuse_oversized_batch([pair[0] for pair in plan.to_block])
+    _refuse_oversized_batch(unblock_ids)
+
     blocked: UploadOutcome | None = None
     if plan.to_block:
         blocked = await block_artists(session, [pair[0] for pair in plan.to_block])

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.fakes import FakeSession
 from tidal_sync.domain.exceptions import BatchTooLarge
 from tidal_sync.domain.results import UploadOutcome
 from tidal_sync.engine import curation, filterlist_apply, filterlist_store
@@ -612,3 +613,37 @@ async def test_block_artists_refuses_a_batch_over_the_ceiling(
         await curation.block_artists(object(), [str(i) for i in range(5001)])
 
     assert calls == [], "no write may be attempted once the ceiling is breached"
+
+
+async def test_an_oversized_unblock_aborts_before_the_block_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BatchTooLarge says nothing was written, so nothing may be written.
+
+    execute_apply is the only caller that issues two batches. The leaf
+    guard on the unblock verb fires after the block batch has already
+    completed, which leaves the account and the error message disagreeing.
+    """
+    written: list[list[str]] = []
+
+    async def _apply_per_id(ids: list[str], action: object, label: str) -> UploadOutcome:
+        written.append(list(ids))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    # Fake the per-id writer and leave both verbs real, so the guard
+    # under test stays the shipped one. Stubbing the verbs would hide
+    # the ordering this test exists to pin.
+    monkeypatch.setattr(curation, "_apply_per_id", _apply_per_id)
+
+    plan = filterlist_apply.ApplyPlan(
+        to_block=[("1", "one")],
+        already_blocked=[],
+        unlisted=[],
+        errors=[],
+    )
+    oversized = [str(i) for i in range(curation.MAX_APPLY_IDS + 1)]
+
+    with pytest.raises(BatchTooLarge):
+        await filterlist_apply.execute_apply(FakeSession(), plan, unblock_ids=oversized)
+
+    assert written == [], f"an oversized batch must abort before every write, got {written}"

@@ -33,6 +33,7 @@ from typing import Any
 import orjson
 
 from tidal_sync.auth import CONFIG_DIR
+from tidal_sync.engine.filterlist import SUPPORTED_FORMATS
 
 STORE_DIR: Path = CONFIG_DIR / "filter_lists"
 _SUBSCRIPTIONS_FILE: str = "subscriptions.json"
@@ -41,11 +42,6 @@ _CACHE_DIR: str = "cache"
 # Mirrors the discipline used by auth._PROFILE_NAME_RE so a subscription
 # name cannot escape its directory with ``..`` or a separator.
 _NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$")
-
-# Format is read off the index too, not just off a CLI flag, so the
-# allowlist lives here where both call sites reach it. A corrupted or
-# hand-edited record with ``"format": "../../../evil"`` must not pass.
-SUPPORTED_FORMATS: tuple[str, ...] = ("txt", "csv", "json")
 
 
 class StoreError(Exception):
@@ -120,12 +116,12 @@ def _ensure_dir(path: Path) -> None:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
 
 
-def _index_path() -> Path:
+def store_index_path() -> Path:
     return STORE_DIR / _SUBSCRIPTIONS_FILE
 
 
 def _read_index() -> list[dict[str, Any]]:
-    path = _index_path()
+    path = store_index_path()
     if not path.exists():
         # A missing file is genuinely an empty store. Anything else
         # means the read failed, which must not be conflated with
@@ -147,7 +143,7 @@ def _read_index() -> list[dict[str, Any]]:
 
 def _write_index(records: list[dict[str, Any]]) -> None:
     _ensure_dir(STORE_DIR)
-    target = _index_path()
+    target = store_index_path()
     temp = target.with_name(target.name + ".part")
     try:
         with open(temp, "wb") as f:

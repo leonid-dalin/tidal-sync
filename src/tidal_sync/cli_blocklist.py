@@ -34,7 +34,7 @@ writes.
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 
@@ -44,7 +44,7 @@ from .cli_shared import BLOCK_RAIL_THRESHOLD, console
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
 from .domain.results import UploadOutcome
 from .engine.filterlist import FormatError, detect_format
-from .engine.filterlist_apply import ApplyPlan, _now_iso, execute_apply, plan_apply
+from .engine.filterlist_apply import MAX_APPLY_IDS, ApplyPlan, _now_iso, execute_apply, plan_apply
 from .engine.filterlist_fetch import FetchError, fetch_source
 from .engine.filterlist_store import (
     StoreError,
@@ -54,6 +54,7 @@ from .engine.filterlist_store import (
     load_subscriptions,
     remove_subscription,
     save_subscriptions,
+    store_index_path,
 )
 
 blocklist_app = typer.Typer(
@@ -63,16 +64,22 @@ blocklist_app = typer.Typer(
 )
 
 
-def _report_store_error(exc: StoreError) -> None:
+def report_store_error(exc: StoreError) -> NoReturn:
     """Print the standard unreadable-store message and exit 1."""
-    from .engine.filterlist_store import _index_path
-
     console.print(f"[bold red]Subscription store unreadable:[/bold red] {exc}")
     console.print(
-        f"  [dim]store path: {_index_path()}[/dim]\n"
+        f"  [dim]store path: {store_index_path()}[/dim]\n"
         "  [dim]fix or delete subscriptions.json, then retry.[/dim]"
     )
     raise typer.Exit(1) from exc
+
+
+def report_capped(to_block_count: int) -> NoReturn:
+    console.print(
+        f"[bold red]Refused:[/bold red] to_block has {to_block_count} ids, "
+        f"exceeds MAX_APPLY_IDS={MAX_APPLY_IDS}; aborting"
+    )
+    raise typer.Exit(1)
 
 
 def _format_table(rows: list[Subscription]) -> None:
@@ -176,8 +183,7 @@ def update(
     try:
         all_subs = load_subscriptions()
     except StoreError as exc:
-        _report_store_error(exc)
-        return  # _report_store_error raises; the return keeps mypy quiet
+        report_store_error(exc)
     if name is not None:
         subs = [s for s in all_subs if s.name == name]
         if not subs:
@@ -218,8 +224,7 @@ def show() -> None:
     try:
         rows = load_subscriptions()
     except StoreError as exc:
-        _report_store_error(exc)
-        return  # _report_store_error raises; the return keeps mypy quiet
+        report_store_error(exc)
     _format_table(rows)
 
 
@@ -259,11 +264,7 @@ async def _run_apply(
     outcome = await execute_apply(session, plan, unblock_ids=unblock_ids)
 
     if outcome.capped:
-        console.print(
-            f"[bold red]Refused:[/bold red] to_block has {len(plan.to_block)} ids, "
-            f"exceeds MAX_APPLY_IDS={5000}; aborting"
-        )
-        raise typer.Exit(1)
+        report_capped(len(plan.to_block))
 
     failed = _report_outcome(outcome.blocked, "Blocked artist", "block failed")
     failed += _report_outcome(outcome.unblocked, "unblock", "unblock failed")
@@ -312,8 +313,7 @@ def apply(
     try:
         subs = load_subscriptions()
     except StoreError as exc:
-        _report_store_error(exc)
-        return  # _report_store_error raises; the return keeps mypy quiet
+        report_store_error(exc)
     if not subs:
         console.print("[yellow]No subscriptions. Use 'tidal-sync blocklist add' first.[/yellow]")
         return

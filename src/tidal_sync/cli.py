@@ -35,7 +35,7 @@ from typing import Annotated, Any
 import typer
 
 from .auth import _get_all_profiles, get_session, secure_delete_token
-from .cli_blocklist import blocklist_app
+from .cli_blocklist import blocklist_app, report_capped, report_store_error
 from .cli_shared import BLOCK_RAIL_THRESHOLD, console
 from .domain.enums import ClearTarget, FavoriteKind
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
@@ -374,19 +374,12 @@ def _resolve_block_lists(
     runs. When neither flag is given, returns an empty list so the
     positional path is the only source of ids.
     """
-    from .engine.filterlist_store import _index_path
-
     subs: list[Subscription] = []
     if from_list is not None:
         try:
             found = [s for s in load_subscriptions() if s.name == from_list]
         except StoreError as exc:
-            console.print(f"[bold red]Subscription store unreadable:[/bold red] {exc}")
-            console.print(
-                f"  [dim]store path: {_index_path()}[/dim]\n"
-                "  [dim]fix or delete subscriptions.json, then retry.[/dim]"
-            )
-            raise typer.Exit(1) from exc
+            report_store_error(exc)
         if not found:
             console.print(f"[bold red]No such subscription:[/bold red] {from_list}")
             raise typer.Exit(1)
@@ -452,11 +445,7 @@ def _run_block_with_lists(
     list_outcome = asyncio.run(execute_apply(session, plan, unblock_ids=[]))
 
     if list_outcome.capped:
-        console.print(
-            f"[bold red]Refused:[/bold red] to_block has {len(plan.to_block)} ids, "
-            f"exceeds MAX_APPLY_IDS={5000}; aborting"
-        )
-        raise typer.Exit(1)
+        report_capped(len(plan.to_block))
 
     if leftover:
         leftover_outcome = asyncio.run(curation.block_artists(session, leftover))

@@ -249,8 +249,9 @@ def test_blocklist_apply_force_skips_unblock_prompt(
     assert unblock_calls == [["998", "997"]], "execute_apply must handle the unblock under --prune"
 
 
-# Test 6: an oversized prune batch is refused through the shared handler,
-# not by a traceback. --prune is the only bulk path to unblock_artists.
+# Test 6: an oversized prune batch exits 1 through the shared handler,
+# so no traceback reaches the operator. --prune is the only bulk path
+# to unblock_artists.
 
 
 def test_an_oversized_prune_is_refused_without_a_traceback(
@@ -278,8 +279,9 @@ def test_an_oversized_prune_is_refused_without_a_traceback(
         return UploadOutcome(applied=list(ids), rejected=[])
 
     monkeypatch.setattr(cli_blocklist, "plan_apply", _plan_apply)
-    # Fake the per-id writer, not unblock_artists, so the guard under
-    # test is the real one. Patching the verb would stub it away.
+    # Fake the per-id writer and leave unblock_artists real, so the
+    # guard under test stays the shipped one. Patching the verb would
+    # stub it away.
     monkeypatch.setattr(curation, "_apply_per_id", _apply_per_id)
 
     # execute_apply stays real, so the whole prune path runs as shipped.

@@ -10,7 +10,6 @@ write calls are under test.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +17,7 @@ import orjson
 import pytest
 from typer.testing import CliRunner
 
+from tests.fakes import FakeSession, fake_subscription
 from tidal_sync import cli as cli_module
 from tidal_sync.cli import app
 from tidal_sync.domain.results import UploadOutcome
@@ -138,28 +138,6 @@ def test_a_capped_list_blocks_no_positional_leftover(
 # ---------------------------------------------------------------------------
 
 
-class _FakeUser:
-    id = 4242
-
-
-def _fake_session() -> object:
-    return type("S", (), {"user": _FakeUser()})()
-
-
-def _fake_subscription(
-    name: str = "kpop",
-    source: str = "https://example.test/list.txt",
-    fmt: str = "txt",
-    last_fetched: str | None = None,
-) -> Subscription:
-    return Subscription(
-        name=name,
-        source=source,
-        format=fmt,
-        last_fetched=last_fetched or datetime.now(UTC).isoformat(),
-    )
-
-
 def _patch_cli_common(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -177,7 +155,7 @@ def _patch_cli_common(
         "load_calls": 0,
     }
 
-    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
+    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": FakeSession())
 
     def _load_subscriptions() -> list[Subscription]:
         box["load_calls"] += 1
@@ -214,7 +192,7 @@ def test_block_from_list_resolves_stored_subscription_and_blocks_its_ids(
     """``block --from-list kpop`` loads the subscription, runs the engine,
     and prints one line per applied id.
     """
-    sub = _fake_subscription(name="kpop", source="https://example.test/kpop.txt")
+    sub = fake_subscription(name="kpop", source="https://example.test/kpop.txt")
     plan = ApplyPlan(
         to_block=[("4894212", "Alpha"), ("8107285", "Beta")],
         already_blocked=[],
@@ -277,7 +255,7 @@ def test_block_from_list_composes_with_positional_ids(
     """``block --from-list kpop 8107285`` sends the union of subscription
     ids and positional ids to the engine.
     """
-    sub = _fake_subscription(name="kpop")
+    sub = fake_subscription(name="kpop")
     plan = ApplyPlan(
         to_block=[("4894212", "Alpha"), ("8107285", "Beta")],
         already_blocked=[],
@@ -344,7 +322,7 @@ def test_block_with_only_positional_ids_is_unchanged(monkeypatch: pytest.MonkeyP
     """
     engine_calls: list[list[str]] = []
 
-    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
+    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": FakeSession())
 
     async def _block_artists(session: object, ids: list[str]) -> UploadOutcome:
         engine_calls.append(list(ids))
@@ -375,7 +353,7 @@ def test_unblock_is_unaffected_and_has_no_new_flags(monkeypatch: pytest.MonkeyPa
     """
     engine_calls: list[list[str]] = []
 
-    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
+    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": FakeSession())
 
     async def _unblock_artists(session: object, ids: list[str]) -> UploadOutcome:
         engine_calls.append(list(ids))
@@ -428,7 +406,7 @@ def test_block_with_no_ids_and_no_flags_is_a_usage_error(
         engine_calls.append(list(ids))
         return UploadOutcome(applied=list(ids), rejected=[])
 
-    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
+    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": FakeSession())
     monkeypatch.setattr(cli_module.curation, "block_artists", _block_artists)
 
     result = runner.invoke(app, ["block"])

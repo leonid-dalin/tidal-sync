@@ -69,7 +69,7 @@ def _make_fake_checkbox(answer: list[Any] | Exception) -> tuple[MagicMock, _Fake
 @pytest.fixture
 def fake_questionary(monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, _FakeCheckboxApp]:
     fake_module, app = _make_fake_checkbox(["a1", "a2"])
-    monkeypatch.setattr(cli_prompts, "questionary", fake_module)
+    monkeypatch.setattr("questionary.checkbox", fake_module.checkbox)
     return fake_module, app
 
 
@@ -105,7 +105,7 @@ def test_non_tty_returns_empty_and_prints_each_candidate(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     fake_module, _ = _make_fake_checkbox(["a1"])
-    monkeypatch.setattr(cli_prompts, "questionary", fake_module)
+    monkeypatch.setattr("questionary.checkbox", fake_module.checkbox)
     monkeypatch.setattr(cli_prompts.sys.stdin, "isatty", lambda: False)
 
     result = cli_prompts.prompt_unblock([("a1", "Alpha"), ("a2", "Beta")], force=False)
@@ -171,7 +171,7 @@ def test_timeout_returns_empty(
 
     fake_module = MagicMock()
     fake_module.checkbox.return_value = _SlowApp()
-    monkeypatch.setattr(cli_prompts, "questionary", fake_module)
+    monkeypatch.setattr("questionary.checkbox", fake_module.checkbox)
     monkeypatch.setattr(cli_prompts.sys.stdin, "isatty", lambda: True)
 
     started = time.monotonic()
@@ -193,7 +193,7 @@ def test_empty_selection_returns_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_module, _ = _make_fake_checkbox([])
-    monkeypatch.setattr(cli_prompts, "questionary", fake_module)
+    monkeypatch.setattr("questionary.checkbox", fake_module.checkbox)
     monkeypatch.setattr(cli_prompts.sys.stdin, "isatty", lambda: True)
 
     result = cli_prompts.prompt_unblock([("a1", "Alpha"), ("a2", "Beta")], force=False)
@@ -228,7 +228,7 @@ def test_labelling_keeps_id_when_name_is_empty(
         return _FakeCheckboxApp(["a1"])
 
     fake_module.checkbox.side_effect = fake_checkbox
-    monkeypatch.setattr(cli_prompts, "questionary", fake_module)
+    monkeypatch.setattr("questionary.checkbox", fake_module.checkbox)
     monkeypatch.setattr(cli_prompts.sys.stdin, "isatty", lambda: True)
 
     result = cli_prompts.prompt_unblock([("a1", "")], force=False)
@@ -246,7 +246,7 @@ def test_thread_boundary_unsafe_ask_runs_in_worker(
     fake_module = MagicMock()
     app = _FakeCheckboxApp(["a1"])
     fake_module.checkbox.return_value = app
-    monkeypatch.setattr(cli_prompts, "questionary", fake_module)
+    monkeypatch.setattr("questionary.checkbox", fake_module.checkbox)
 
     cli_prompts.prompt_unblock([("a1", "Alpha")], force=False)
 
@@ -268,7 +268,7 @@ def test_non_tty_parametrised(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     fake_module, _ = _make_fake_checkbox(["unused"])
-    monkeypatch.setattr(cli_prompts, "questionary", fake_module)
+    monkeypatch.setattr("questionary.checkbox", fake_module.checkbox)
     monkeypatch.setattr(cli_prompts.sys.stdin, "isatty", lambda: False)
 
     result = cli_prompts.prompt_unblock(candidates, force=False)
@@ -280,3 +280,30 @@ def test_non_tty_parametrised(
         if name:
             assert name in out
     fake_module.checkbox.assert_not_called()
+
+
+def test_a_timed_out_prompt_restores_the_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An abandoned prompt thread still owns the tty until it is reset.
+
+    Without the reset the operator's shell is left in raw mode after a
+    90 second timeout.
+    """
+    reset_calls: list[int] = []
+
+    class _HangingPrompt:
+        def unsafe_ask(self) -> list[str]:
+            import time
+
+            time.sleep(5)
+            return []
+
+    monkeypatch.setattr(cli_prompts, "_reset_terminal", lambda: reset_calls.append(1))
+    monkeypatch.setattr(cli_prompts.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("questionary.checkbox", lambda *a, **k: _HangingPrompt())
+
+    picked = cli_prompts.prompt_unblock([("1", "A")], force=False, timeout=0.1)
+
+    assert picked == []
+    assert reset_calls == [1], "a timed-out prompt must reset the terminal"

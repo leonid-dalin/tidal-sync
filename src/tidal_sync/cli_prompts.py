@@ -34,8 +34,9 @@ _TIMEOUT_SECONDS: float = 90.0
 
 
 def _label_for(candidate_id: str, name: str) -> str:
+    """Name first: an operator scans names, not ids."""
     if name:
-        return f"{candidate_id} ({name})"
+        return f"{name} ({candidate_id})"
     return candidate_id
 
 

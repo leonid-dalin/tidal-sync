@@ -230,12 +230,23 @@ async def _reconcile_block_write(
 async def fetch_blocked_artist_ids(session: tidalapi.Session) -> list[str]:
     """Lists the user's blocked artists as a flat list of string ids.
 
-    Strict caller over `fetch_blocked_artists_strict`; a failed page fetch
+    Strict caller over ``fetch_blocked_artists_strict``; a failed page fetch
     propagates rather than being swallowed. The reconciliation in
-    `_reconcile_block_write` owns this invariant: a missing blocklist after
+    ``_reconcile_block_write`` owns this invariant: a missing blocklist after
     a block or unblock write must not be reported as "confirmed removed".
     Order matches the network order so the caller can correlate positions
     across runs.
     """
     artists = await execute_network(fetch_blocked_artists_strict, session)
     return [str(a.id) for a in artists]
+
+
+async def fetch_blocked_artists_named(session: tidalapi.Session) -> list[tuple[str, str]]:
+    """Lists blocked artists as ``(id, name)`` pairs.
+
+    Same strict read as ``fetch_blocked_artist_ids``; the artist objects
+    already carry names, and the unblock prompt cannot ask a useful
+    question without them. Order matches the network order.
+    """
+    artists = await execute_network(fetch_blocked_artists_strict, session)
+    return [(str(artist.id), str(getattr(artist, "name", "") or "")) for artist in artists]

@@ -45,7 +45,11 @@ from ..domain.results import UploadOutcome
 # Imported here so tests can monkeypatch by attribute. The real
 # implementations are used unchanged; nothing in this module redefines
 # the curation verbs or ``parse_filter_list``.
-from .curation import block_artists, fetch_blocked_artist_ids, unblock_artists
+from .curation import (
+    block_artists,
+    fetch_blocked_artists_named,
+    unblock_artists,
+)
 from .filterlist import FormatError, parse_filter_list
 from .filterlist_fetch import FetchError, fetch_source
 from .filterlist_store import Subscription, cache_path
@@ -160,21 +164,33 @@ async def plan_apply(
             order.append(tidal_id)
 
     # Step 3. The live blocklist is the strict variant, so a failed
-    # read propagates rather than returning empty.
-    blocked_ids = await fetch_blocked_artist_ids(session)
-    blocked_set = set(blocked_ids)
+    # read propagates rather than returning empty. The named variant
+    # is the same read but keeps the artist names; the unblock prompt
+    # cannot ask a useful question from bare ids.
+    order_of_blocked = await fetch_blocked_artists_named(session)
+    blocked_names: dict[str, str] = {bid: name for bid, name in order_of_blocked}
+    blocked_set = set(blocked_names)
 
-    # Step 4. Partition into the three sets the CLI will print.
+    # Step 4. Partition into the three sets the CLI will print. An id
+    # present in both the subscription union and the blocklist keeps
+    # the subscription's name where available, and falls back to the
+    # blocklist's name when the subscription did not carry one, so the
+    # operator still sees something rather than a bare id.
     to_block: list[tuple[str, str]] = []
     already_blocked: list[tuple[str, str]] = []
     for tidal_id in order:
         if tidal_id in blocked_set:
-            already_blocked.append((tidal_id, name_for_id[tidal_id]))
+            name = name_for_id[tidal_id] or blocked_names.get(tidal_id, "")
+            already_blocked.append((tidal_id, name))
         else:
             to_block.append((tidal_id, name_for_id[tidal_id]))
 
     union_id_set = set(order)
-    unlisted: list[tuple[str, str]] = [(bid, "") for bid in blocked_ids if bid not in union_id_set]
+    unlisted: list[tuple[str, str]] = [
+        (bid, blocked_names.get(bid, ""))
+        for bid, _name in order_of_blocked
+        if bid not in union_id_set
+    ]
 
     return ApplyPlan(
         to_block=to_block,

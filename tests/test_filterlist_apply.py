@@ -1,6 +1,6 @@
 """Tests for the filter-list apply engine.
 
-All tests monkeypatch ``fetch_source``, ``fetch_blocked_artist_ids``,
+All tests monkeypatch ``fetch_source``, ``fetch_blocked_artists_named``,
 ``block_artists`` and ``unblock_artists`` so no real network or write
 ever happens. The engine is async and awaits those verbs, so every
 test here is ``async def`` to avoid the silent-no-op trap a sync test
@@ -109,7 +109,7 @@ async def test_plan_apply_makes_no_writes(
         return 2
 
     monkeypatch.setattr(filterlist_apply, "fetch_source", _fetch)
-    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artist_ids", _fetch_blocked)
+    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _fetch_blocked)
     monkeypatch.setattr(filterlist_apply, "block_artists", r_block)
     monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
 
@@ -164,7 +164,7 @@ async def test_fetch_error_recorded_but_sibling_continues(
         return []
 
     monkeypatch.setattr(filterlist_apply, "fetch_source", _fetch)
-    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artist_ids", _fetch_blocked)
+    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _fetch_blocked)
     monkeypatch.setattr(filterlist_apply, "block_artists", r_block)
     monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
 
@@ -211,7 +211,7 @@ async def test_same_id_in_two_lists_appears_once(monkeypatch: pytest.MonkeyPatch
         return []
 
     monkeypatch.setattr(filterlist_apply, "fetch_source", _fetch)
-    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artist_ids", _fetch_blocked)
+    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _fetch_blocked)
     monkeypatch.setattr(filterlist_apply, "block_artists", r_block)
     monkeypatch.setattr(filterlist_apply, "unblock_artists", _R())
 
@@ -272,7 +272,7 @@ async def test_stale_refetched_fresh_skipped(
         return []
 
     monkeypatch.setattr(filterlist_apply, "fetch_source", _fetch)
-    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artist_ids", _fetch_blocked)
+    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _fetch_blocked)
     monkeypatch.setattr(filterlist_apply, "block_artists", r_block)
     monkeypatch.setattr(filterlist_apply, "unblock_artists", _R())
 
@@ -314,10 +314,10 @@ async def test_already_blocked_separated(monkeypatch: pytest.MonkeyPatch, now: d
 
     async def _fetch_blocked(session):
         # "2" is already on the live blocklist.
-        return ["2"]
+        return [("2", "")]
 
     monkeypatch.setattr(filterlist_apply, "fetch_source", _fetch)
-    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artist_ids", _fetch_blocked)
+    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _fetch_blocked)
     monkeypatch.setattr(filterlist_apply, "block_artists", r_block)
     monkeypatch.setattr(filterlist_apply, "unblock_artists", _R())
 
@@ -356,10 +356,10 @@ async def test_unlisted_computed(monkeypatch: pytest.MonkeyPatch, now: datetime)
 
     async def _fetch_blocked(session):
         # "99" is blocked but not in the subscription list.
-        return ["99"]
+        return [("99", "")]
 
     monkeypatch.setattr(filterlist_apply, "fetch_source", _fetch)
-    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artist_ids", _fetch_blocked)
+    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _fetch_blocked)
     monkeypatch.setattr(filterlist_apply, "block_artists", _R())
     monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
 
@@ -374,6 +374,23 @@ async def test_unlisted_computed(monkeypatch: pytest.MonkeyPatch, now: datetime)
 
     assert plan.unlisted == [("99", "")]
     assert r_unblock.calls == []
+
+
+async def test_unlisted_carries_artist_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The unblock prompt is the one place a name matters most.
+
+    An operator deciding what to stop blocking cannot do it from bare
+    numeric ids, and the blocklist read already returns artist objects.
+    """
+
+    async def _blocked(session: object) -> list[tuple[str, str]]:
+        return [("4894212", "Bad Bunny"), ("8107285", "Rosalia")]
+
+    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _blocked)
+
+    plan = await filterlist_apply.plan_apply(object(), [])
+
+    assert plan.unlisted == [("4894212", "Bad Bunny"), ("8107285", "Rosalia")]
 
 
 async def test_empty_subscriptions_yields_empty_plan(monkeypatch: pytest.MonkeyPatch):
@@ -392,7 +409,7 @@ async def test_empty_subscriptions_yields_empty_plan(monkeypatch: pytest.MonkeyP
         return []
 
     monkeypatch.setattr(filterlist_apply, "fetch_source", _R())
-    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artist_ids", _fetch_blocked)
+    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _fetch_blocked)
     monkeypatch.setattr(filterlist_apply, "block_artists", r_block)
     monkeypatch.setattr(filterlist_apply, "unblock_artists", r_unblock)
     monkeypatch.setattr(filterlist_apply, "parse_filter_list", lambda d, f: [])
@@ -546,7 +563,7 @@ async def test_a_missing_cache_file_is_a_recorded_error_not_a_crash(
         return []
 
     monkeypatch.setattr(filterlist_apply, "fetch_source", _fetch)
-    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artist_ids", _fetch_blocked)
+    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _fetch_blocked)
     monkeypatch.setattr(filterlist_apply, "block_artists", _noop_block)
     monkeypatch.setattr(filterlist_apply, "unblock_artists", _noop_block)
 

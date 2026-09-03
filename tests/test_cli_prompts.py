@@ -282,6 +282,12 @@ def test_non_tty_parametrised(
     fake_module.checkbox.assert_not_called()
 
 
+def test_prompt_label_leads_with_the_name() -> None:
+    """`Bad Bunny (4894212)` scans; `4894212 (Bad Bunny)` does not."""
+    assert cli_prompts._label_for("4894212", "Bad Bunny") == "Bad Bunny (4894212)"
+    assert cli_prompts._label_for("4894212", "") == "4894212"
+
+
 def test_a_timed_out_prompt_restores_the_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

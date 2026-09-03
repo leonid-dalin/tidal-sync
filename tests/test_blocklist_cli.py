@@ -631,11 +631,11 @@ def rail_setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, lis
         "\n".join(tid for tid, _name in ids) + "\n", encoding="utf-8"
     )
 
-    async def _fetch_blocked_ids(session: object) -> list[str]:
+    async def _fetch_blocked_ids(session: object) -> list[tuple[str, str]]:
         return []
 
     monkeypatch.setattr(filterlist_apply, "fetch_source", _fetch)
-    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artist_ids", _fetch_blocked_ids)
+    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _fetch_blocked_ids)
     monkeypatch.setattr(filterlist_apply, "parse_filter_list", lambda data, fmt: ids)
 
     async def _block(session: object, ids: list[str]) -> UploadOutcome:

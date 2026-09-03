@@ -10,6 +10,7 @@ would hit when calling an async function.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -497,3 +498,93 @@ async def test_max_apply_ids_aborts_without_writing(monkeypatch: pytest.MonkeyPa
     assert outcome.unblocked is None
     assert r_block.calls == []
     assert r_unblock.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Tests for engine isolation and naive-timestamp handling (Task 13).
+#
+# Background: the fresh-cache branch used to read and parse outside the
+# per-subscription try, so a missing cache file (deleted between the fetch
+# that recorded last_fetched and this read) or a bad parse crashed the
+# whole run. ``_is_stale`` also only caught ``ValueError``; a naive
+# ``last_fetched`` makes ``now - last`` raise ``TypeError`` and killed the
+# run the same way.
+# ---------------------------------------------------------------------------
+
+
+async def test_a_missing_cache_file_is_a_recorded_error_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch, now: datetime, tmp_path
+) -> None:
+    """One subscription's missing cache must not stop the others.
+
+    ``gone`` claims to be fresh but its cache file is gone; ``good`` is
+    also fresh with a real cache. The whole run must complete with
+    ``gone`` reported as an error and ``good`` contributing to the plan.
+    """
+    fresh_ts = _fresh_iso(now, hours_ago=1)
+    subs = [
+        _sub("gone", last_fetched=fresh_ts),
+        _sub("good", last_fetched=fresh_ts),
+    ]
+
+    monkeypatch.setattr(filterlist_apply, "_now_iso", lambda: now.isoformat())
+
+    # The "good" subscription has a real cache; "gone" does not. The
+    # autouse ``store_dir`` fixture already pointed STORE_DIR at
+    # tmp_path/filter_lists, so we write the real cache there.
+    cache_dir = tmp_path / "filter_lists" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "good.txt").write_bytes(b"SUB::good")
+
+    parse = {"good": [("10", "ten")]}
+
+    def _fetch(source: str, fmt: str, dest: Path) -> int:
+        # No sub is stale here, so fetch_source must never be called.
+        raise AssertionError("fetch_source must not run when every sub is fresh")
+
+    async def _fetch_blocked(session: object) -> list[str]:
+        return []
+
+    monkeypatch.setattr(filterlist_apply, "fetch_source", _fetch)
+    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artist_ids", _fetch_blocked)
+    monkeypatch.setattr(filterlist_apply, "block_artists", _noop_block)
+    monkeypatch.setattr(filterlist_apply, "unblock_artists", _noop_block)
+
+    def _parse(data: bytes, fmt: str) -> list[tuple[str, str]]:
+        if data == b"SUB::good":
+            return list(parse["good"])
+        return []
+
+    monkeypatch.setattr(filterlist_apply, "parse_filter_list", _parse)
+
+    plan = await plan_apply("session", subs)
+
+    assert len(plan.errors) == 1
+    assert plan.errors[0][0] == "gone"
+    assert "good" not in {name for name, _err in plan.errors}
+    assert plan.to_block == [("10", "ten")]
+
+
+def _noop_block(session: object, ids: list[str]):  # noqa: ANN001
+    async def _call() -> UploadOutcome:
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    return _call()
+
+
+def test_a_naive_last_fetched_is_treated_as_stale() -> None:
+    """A timestamp without a timezone must not raise TypeError.
+
+    ``_is_stale`` previously caught only ``ValueError``; the subtraction
+    of a naive ``last`` from a tz-aware ``now`` raises ``TypeError``.
+    That exception escaped ``_is_stale`` and crashed the whole run.
+    """
+    sub = Subscription(
+        name="n",
+        source="./n.txt",
+        format="txt",
+        last_fetched="2026-09-01T10:00:00",
+    )
+    # Use a fixed now string with a tz so the only mismatch is the naive
+    # ``last_fetched``: pre-fix, ``now - last`` raised TypeError.
+    assert filterlist_apply._is_stale(sub, "2026-09-02T10:00:00+00:00") is True

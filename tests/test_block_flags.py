@@ -305,3 +305,40 @@ def test_unblock_is_unaffected_and_has_no_new_flags(monkeypatch: pytest.MonkeyPa
     assert "no such option" in result_unknown2.output.lower() or result_unknown2.exit_code == 2, (
         "unblock must not gain --all-from"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 13: bare ``block`` is a usage error.
+#
+# Background: ``block`` grew ``default_factory=list`` on its positional
+# argument so ``tidal-sync block`` with no ids and no flags silently
+# succeeded. The contract is that blocking nothing is a mistake, not a
+# no-op: Typer's BadParameter turns the no-args invocation into a
+# non-zero exit with a clear message.
+# ---------------------------------------------------------------------------
+
+
+def test_block_with_no_ids_and_no_flags_is_a_usage_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``tidal-sync block`` with nothing must exit non-zero and say so.
+
+    The CLI must not call ``curation.block_artists`` (no ids, no flag,
+    nothing to do) and must surface the missing input as a usage
+    error. Typer prints its own ``Missing argument`` or our
+    ``BadParameter`` text; either is acceptable, so the assertion
+    only pins the exit code and that nothing was blocked.
+    """
+    engine_calls: list[list[str]] = []
+
+    async def _block_artists(session: object, ids: list[str]) -> UploadOutcome:
+        engine_calls.append(list(ids))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    monkeypatch.setattr(cli_module, "get_session", lambda profile="default": _fake_session())
+    monkeypatch.setattr(cli_module.curation, "block_artists", _block_artists)
+
+    result = runner.invoke(app, ["block"])
+
+    assert result.exit_code != 0, result.output
+    assert engine_calls == [], "block with no input must never call block_artists"

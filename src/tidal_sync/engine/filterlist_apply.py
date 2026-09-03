@@ -46,7 +46,7 @@ from ..domain.results import UploadOutcome
 # implementations are used unchanged; nothing in this module redefines
 # the curation verbs or ``parse_filter_list``.
 from .curation import block_artists, fetch_blocked_artist_ids, unblock_artists
-from .filterlist import parse_filter_list
+from .filterlist import FormatError, parse_filter_list
 from .filterlist_fetch import FetchError, fetch_source
 from .filterlist_store import Subscription, cache_path
 
@@ -98,17 +98,18 @@ def _is_stale(sub: Subscription, now_iso: str) -> bool:
 
     A missing or unparseable ``last_fetched`` is treated as never
     fetched, so a freshly added subscription refetches on its first
-    run rather than silently joining with zero rows.
+    run rather than silently joining with zero rows. A naive
+    ``last_fetched`` (no timezone) is treated as stale for the same
+    reason: the subtraction of naive from aware raises ``TypeError``
+    and the run cannot continue.
     """
     if sub.last_fetched is None:
         return True
     try:
-        from datetime import datetime
-
         last = datetime.fromisoformat(sub.last_fetched)
         now = datetime.fromisoformat(now_iso)
         delta_hours = (now - last).total_seconds() / 3600.0
-    except ValueError:
+    except (ValueError, TypeError):
         return True
     return delta_hours >= sub.ttl_hours
 
@@ -131,21 +132,20 @@ async def plan_apply(
     errors: list[tuple[str, str]] = []
     union_pairs: list[tuple[str, str]] = []
 
-    # Steps 1 and 2. One bad list never stops the others.
+    # Steps 1 and 2. One bad list never stops the others. The fresh
+    # branch shares this try with the stale one: a cache file can be
+    # deleted between the fetch that recorded ``last_fetched`` and this
+    # read, so missing-file and bad-parse errors must be recorded
+    # against the subscription rather than crashing the run.
     for sub in subscriptions:
-        if not _is_stale(sub, now_iso):
+        try:
             dest = cache_path(sub.name, sub.format)
-            data = dest.read_bytes()
-            pairs = parse_filter_list(data, sub.format)
-        else:
-            dest = cache_path(sub.name, sub.format)
-            try:
+            if _is_stale(sub, now_iso):
                 fetch_source(sub.source, sub.format, dest)
-            except FetchError as exc:
-                errors.append((sub.name, str(exc)))
-                continue
-            data = dest.read_bytes()
-            pairs = parse_filter_list(data, sub.format)
+            pairs = parse_filter_list(dest.read_bytes(), sub.format)
+        except (FetchError, FormatError, OSError, ValueError) as exc:
+            errors.append((sub.name, str(exc)))
+            continue
         union_pairs.extend(pairs)
 
     # Deduplicate across lists. Order matches first appearance; later

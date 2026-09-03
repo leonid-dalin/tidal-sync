@@ -173,9 +173,6 @@ def add(
 @blocklist_app.command(name="remove")
 def remove(
     name: Annotated[str, typer.Argument(help="Subscription name to remove")],
-    profile: Annotated[
-        str, typer.Option("--profile", "-p", help="Profile name (accepted for parity)")
-    ] = "default",
 ) -> None:
     """Drop a subscription by name."""
     from .cli import console
@@ -236,11 +233,7 @@ def update(
 
 
 @blocklist_app.command(name="show")
-def show(
-    profile: Annotated[
-        str, typer.Option("--profile", "-p", help="Profile name (accepted for parity)")
-    ] = "default",
-) -> None:
+def show() -> None:
     """Print every subscription with its source, format and last fetch state."""
     try:
         rows = load_subscriptions()

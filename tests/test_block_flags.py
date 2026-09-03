@@ -86,3 +86,41 @@ def test_from_list_confirming_the_rail_blocks_exactly_once(
     assert result.exit_code == 0
     assert len(blocked) == 1, f"expected one block call, got {len(blocked)}"
     assert len(blocked[0]) == 15
+
+
+def test_a_capped_list_blocks_no_positional_leftover(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A capped run must abort before the leftover write, not after.
+
+    Printing "aborting" once a write has already gone out is the same
+    shape as the rail defect: a guard reported after the action.
+    """
+    from tidal_sync.engine import curation
+
+    monkeypatch.setattr(filterlist_store, "STORE_DIR", tmp_path / "filter_lists")
+    source = tmp_path / "huge.txt"
+    source.write_text("\n".join(str(100000 + i) for i in range(5001)), encoding="utf-8")
+    filterlist_store.add_subscription(
+        filterlist_store.Subscription(name="huge", source=str(source), format="txt")
+    )
+
+    blocked: list[list[str]] = []
+
+    async def _block(session: object, ids: list[str]) -> UploadOutcome:
+        blocked.append(list(ids))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    async def _named(session: object) -> list[tuple[str, str]]:
+        return []
+
+    monkeypatch.setattr(filterlist_apply, "block_artists", _block)
+    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _named)
+    monkeypatch.setattr(curation, "block_artists", _block)
+    monkeypatch.setattr(cli, "get_session", lambda profile: object())
+
+    result = runner.invoke(app, ["block", "--from-list", "huge", "777", "--force"])
+
+    assert result.exit_code == 1
+    assert blocked == [], "a capped run must write nothing at all"
+    assert "Blocked artist 777" not in result.output

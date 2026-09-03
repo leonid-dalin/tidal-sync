@@ -451,6 +451,13 @@ def _run_block_with_lists(
 
     list_outcome = asyncio.run(execute_apply(session, plan, prune=False))
 
+    if list_outcome.capped:
+        console.print(
+            f"[bold red]Refused:[/bold red] to_block has {len(plan.to_block)} ids, "
+            f"exceeds MAX_APPLY_IDS={5000}; aborting"
+        )
+        raise typer.Exit(1)
+
     if leftover:
         leftover_outcome = asyncio.run(curation.block_artists(session, leftover))
         for item_id in leftover_outcome.applied:
@@ -459,13 +466,6 @@ def _run_block_with_lists(
             for item_id in leftover_outcome.rejected:
                 console.print(f"  [red]block failed {item_id}[/red]")
             raise typer.Exit(1)
-
-    if list_outcome.capped:
-        console.print(
-            f"[bold red]Refused:[/bold red] to_block has {len(plan.to_block)} ids, "
-            f"exceeds MAX_APPLY_IDS={5000}; aborting"
-        )
-        raise typer.Exit(1)
 
     if list_outcome.blocked is not None:
         for item_id in list_outcome.blocked.applied:

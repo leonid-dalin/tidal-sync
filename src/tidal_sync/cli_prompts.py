@@ -30,8 +30,6 @@ import sys
 import threading
 from typing import Any
 
-import questionary
-
 _TIMEOUT_SECONDS: float = 90.0
 
 
@@ -42,8 +40,29 @@ def _label_for(candidate_id: str, name: str) -> str:
 
 
 def _print_candidates(candidates: list[tuple[str, str]]) -> None:
+    from .cli import console
+
     for cid, name in candidates:
-        print(_label_for(cid, name), file=sys.stdout)
+        console.print(_label_for(cid, name))
+
+
+def _reset_terminal() -> None:
+    """Return the terminal to cooked mode after an abandoned prompt.
+
+    The timeout leaves the worker thread inside prompt_toolkit, which
+    holds the tty in raw mode. Nothing else restores it, so the operator's
+    shell would stay broken after a skip.
+    """
+    if not sys.stdout.isatty():
+        return
+    try:
+        from prompt_toolkit.output.defaults import create_output
+
+        create_output().reset_attributes()
+    except Exception:
+        # A terminal we cannot reset is not worth crashing a skip path
+        # over; the skip itself is still correct.
+        pass
 
 
 def prompt_unblock(
@@ -69,6 +88,8 @@ def prompt_unblock(
     box: dict[str, Any] = {}
 
     def worker() -> None:
+        import questionary
+
         try:
             answer = questionary.checkbox(
                 "Unblock which artists?",
@@ -87,6 +108,7 @@ def prompt_unblock(
     thread.join(timeout=timeout)
 
     if thread.is_alive():
+        _reset_terminal()
         _print_candidates(candidates)
         return []
 

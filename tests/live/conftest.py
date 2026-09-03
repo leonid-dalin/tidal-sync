@@ -23,8 +23,19 @@ import pytest
 from tidal_sync.auth import get_session
 
 
+"""Fixtures for the live suite.
+
+The account profile is read from TIDAL_TEST_PROFILE, which is the name the
+live-tests workflow exports. A missing or unauthenticated profile is an
+error, never a skip: a suite that skips on a bad token reports green for
+the one condition it exists to detect, and pytest exits 0 when everything
+skips.
+"""
+
+
 @pytest.fixture(scope="session")
 def live_profile() -> str:
+    """The throwaway account name from the environment, failing if absent."""
     name = os.environ.get("TIDAL_TEST_PROFILE")
     if not name:
         pytest.fail("TIDAL_TEST_PROFILE is not set; the live suite has no account to run against")
@@ -33,6 +44,7 @@ def live_profile() -> str:
 
 @pytest.fixture(scope="session")
 def session(live_profile: str) -> Any:
+    """An authenticated session, failing hard rather than skipping on a bad token."""
     sess = get_session(live_profile)
     if sess.user is None:
         pytest.fail(f"profile {live_profile!r} did not authenticate; the stored token is stale")

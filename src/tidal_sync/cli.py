@@ -36,9 +36,10 @@ import typer
 
 from .auth import _get_all_profiles, get_session, secure_delete_token
 from .cli_blocklist import blocklist_app, report_capped, report_store_error
-from .cli_shared import BLOCK_RAIL_THRESHOLD, console
+from .cli_shared import BLOCK_RAIL_THRESHOLD, _report_outcome, console
 from .domain.enums import ClearTarget, FavoriteKind
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
+from .domain.results import UploadOutcome
 from .engine import curation
 from .engine.exporter import (
     export_algorithmic_mixes_to_disk,
@@ -46,7 +47,7 @@ from .engine.exporter import (
     export_user_playlists_to_disk,
 )
 from .engine.filterlist import FormatError, detect_format
-from .engine.filterlist_apply import execute_apply, plan_apply
+from .engine.filterlist_apply import MAX_APPLY_IDS, plan_apply
 from .engine.filterlist_store import StoreError, Subscription, load_subscriptions
 from .engine.importer import import_collection_from_disk
 from .engine.parser import extract_tidal_id
@@ -411,14 +412,15 @@ def _run_block_with_lists(
     subs: list[Subscription],
     force: bool,
 ) -> None:
-    """Run ``plan_apply`` on the union of positional and list ids.
+    """Run ``block`` over the union of positional and subscription ids.
 
     Routes around ``_run_block_command`` so the new flags do not widen
-    its signature and risk changing ``unblock``. The rail fires on
-    the union length, matching ``blocklist apply``. The list ids
-    flow through ``execute_apply`` exactly once; the positional
-    leftover is a separate ``block_artists`` call so its
-    per-id classification stays on its own print block.
+    its signature and risk changing ``unblock``. Positional ids join
+    the plan's ids in one batch: two writes existed only because the
+    positional ids were not in the plan, and the de-duplication, the
+    two reporting blocks and the third event loop were downstream of
+    that split. The rail and cap now measure ``to_write``, the same
+    list that gets written.
     """
     try:
         session = get_session(profile)
@@ -430,46 +432,33 @@ def _run_block_with_lists(
         console.print(f"[bold red]tidal-sync could not complete:[/bold red] {e}")
         raise typer.Exit(1) from e
 
-    # Drop positional ids already covered by the subscription union.
-    list_ids = {tid for tid, _name in plan.to_block}
-    list_ids.update(tid for tid, _name in plan.already_blocked)
-    leftover = [i for i in positional if i not in list_ids]
+    list_ids = [tid for tid, _name in plan.to_block]
+    covered = set(list_ids) | {tid for tid, _name in plan.already_blocked}
+    to_write = list_ids + [i for i in positional if i not in covered]
 
-    union_count = len(list_ids) + len(leftover)
-    if not force and union_count > BLOCK_RAIL_THRESHOLD:
-        typed = typer.prompt(f"Type '{profile}' to confirm blocking {union_count} artists")
+    if not force and len(to_write) > BLOCK_RAIL_THRESHOLD:
+        typed = typer.prompt(f"Type '{profile}' to confirm blocking {len(to_write)} artists")
         if typed != profile:
             console.print("[red]Confirmation did not match. Aborting.[/red]")
             raise typer.Exit(1)
 
-    list_outcome = asyncio.run(execute_apply(session, plan, unblock_ids=[]))
+    if len(to_write) > MAX_APPLY_IDS:
+        report_capped(len(to_write))
 
-    if list_outcome.capped:
-        report_capped(len(plan.to_block))
-
-    if leftover:
-        leftover_outcome = asyncio.run(curation.block_artists(session, leftover))
-        for item_id in leftover_outcome.applied:
-            console.print(f"  [green]Blocked artist {item_id}[/green]")
-        if leftover_outcome.rejected:
-            for item_id in leftover_outcome.rejected:
-                console.print(f"  [red]block failed {item_id}[/red]")
-            raise typer.Exit(1)
-
-    if list_outcome.blocked is not None:
-        for item_id in list_outcome.blocked.applied:
-            console.print(f"  [green]Blocked artist {item_id}[/green]")
-        if list_outcome.blocked.rejected:
-            for item_id in list_outcome.blocked.rejected:
-                console.print(f"  [red]block failed {item_id}[/red]")
-            raise typer.Exit(1)
+    outcome = (
+        asyncio.run(curation.block_artists(session, to_write))
+        if to_write
+        else UploadOutcome(applied=[], rejected=[])
+    )
+    failed = _report_outcome(outcome, "Blocked artist", "block failed")
 
     for tid, _name in plan.already_blocked:
         console.print(f"  [cyan]Already blocked artist {tid}[/cyan]")
 
-    if plan.errors:
-        for sub_name, err in plan.errors:
-            console.print(f"  [red]error {sub_name}: {err}[/red]")
+    for sub_name, err in plan.errors:
+        console.print(f"  [red]error {sub_name}: {err}[/red]")
+
+    if failed or plan.errors:
         raise typer.Exit(1)
 
 

@@ -41,9 +41,8 @@ import typer
 
 from .auth import get_session
 from .cli_prompts import prompt_unblock
-from .cli_shared import BLOCK_RAIL_THRESHOLD, console
+from .cli_shared import BLOCK_RAIL_THRESHOLD, _report_outcome, console
 from .domain.exceptions import TidalAuthenticationError, TidalSyncError
-from .domain.results import UploadOutcome
 from .engine.filterlist import FormatError, detect_format
 from .engine.filterlist_apply import MAX_APPLY_IDS, ApplyPlan, _now_iso, execute_apply, plan_apply
 from .engine.filterlist_fetch import FetchError, fetch_source
@@ -266,17 +265,6 @@ async def _run_apply(
 
     if failed or plan.errors:
         raise typer.Exit(1)
-
-
-def _report_outcome(outcome: UploadOutcome | None, applied: str, rejected: str) -> int:
-    """Single reporter for both directions so block and unblock output cannot diverge."""
-    if outcome is None:
-        return 0
-    for tid in outcome.applied:
-        console.print(f"  [green]{applied} {tid}[/green]")
-    for tid in outcome.rejected:
-        console.print(f"  [red]{rejected} {tid}[/red]")
-    return len(outcome.rejected)
 
 
 @blocklist_app.command(name="apply")

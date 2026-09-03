@@ -21,9 +21,9 @@ from typer.testing import CliRunner
 from tidal_sync import cli as cli_module
 from tidal_sync.cli import app
 from tidal_sync.domain.results import UploadOutcome
-from tidal_sync.engine import filterlist_apply, filterlist_store
+from tidal_sync.engine import curation, filterlist_apply, filterlist_store
 from tidal_sync.engine.filterlist import detect_format
-from tidal_sync.engine.filterlist_apply import ApplyOutcome, ApplyPlan
+from tidal_sync.engine.filterlist_apply import ApplyPlan
 from tidal_sync.engine.filterlist_store import Subscription
 
 runner = CliRunner()
@@ -55,6 +55,7 @@ def test_from_list_declining_the_rail_blocks_nothing(
 
     monkeypatch.setattr(filterlist_apply, "block_artists", _block)
     monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _named)
+    monkeypatch.setattr(curation, "block_artists", _block)
     monkeypatch.setattr(cli_module, "get_session", lambda profile: object())
 
     result = runner.invoke(app, ["block", "--from-list", "many"], input="WRONG\n")
@@ -85,6 +86,7 @@ def test_from_list_confirming_the_rail_blocks_exactly_once(
 
     monkeypatch.setattr(filterlist_apply, "block_artists", _block)
     monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _named)
+    monkeypatch.setattr(curation, "block_artists", _block)
     monkeypatch.setattr(cli_module, "get_session", lambda profile: object())
 
     result = runner.invoke(app, ["block", "--from-list", "many"], input="default\n")
@@ -102,7 +104,6 @@ def test_a_capped_list_blocks_no_positional_leftover(
     Printing "aborting" once a write has already gone out is the same
     shape as the rail defect: a guard reported after the action.
     """
-    from tidal_sync.engine import curation
 
     monkeypatch.setattr(filterlist_store, "STORE_DIR", tmp_path / "filter_lists")
     source = tmp_path / "huge.txt"
@@ -198,22 +199,6 @@ def _patch_cli_common(
         return UploadOutcome(applied=list(ids), rejected=[])
 
     monkeypatch.setattr(cli_module.curation, "block_artists", _block_artists)
-
-    async def _execute_apply(
-        session: object, plan: ApplyPlan, *, unblock_ids: list[str]
-    ) -> ApplyOutcome:
-        if plan.to_block:
-            await _block_artists(session, [tid for tid, _name in plan.to_block])
-        return ApplyOutcome(
-            blocked=UploadOutcome(
-                applied=[tid for tid, _name in plan.to_block],
-                rejected=[],
-            ),
-            unblocked=None,
-            capped=False,
-        )
-
-    monkeypatch.setattr(cli_module, "execute_apply", _execute_apply)
 
     return box
 
@@ -522,3 +507,41 @@ def test_blocklist_add_rejects_a_bad_name_with_a_message(tmp_path: Path) -> None
 def test_detect_format_reads_the_path_not_the_query(source: str, expected: str) -> None:
     """A query string or fragment is not part of the extension."""
     assert detect_format(source) == expected
+
+
+def test_a_failed_positional_id_still_reports_the_list_writes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A partial run must name every id it actually blocked.
+
+    The list ids are written before the positional leftover. If the
+    leftover fails, the operator still needs the record of what the
+    run did to the account, not only the record of what it could not
+    do.
+    """
+    monkeypatch.setattr(filterlist_store, "STORE_DIR", tmp_path / "filter_lists")
+    source = tmp_path / "one.txt"
+    source.write_text("111\n222\n", encoding="utf-8")
+    filterlist_store.add_subscription(
+        filterlist_store.Subscription(name="one", source=str(source), format="txt")
+    )
+
+    async def _named(session: object) -> list[tuple[str, str]]:
+        return []
+
+    async def _block(session: object, ids: list[str]) -> UploadOutcome:
+        applied = [i for i in ids if i != "999"]
+        rejected = [i for i in ids if i == "999"]
+        return UploadOutcome(applied=applied, rejected=rejected)
+
+    monkeypatch.setattr(filterlist_apply, "fetch_blocked_artists_named", _named)
+    monkeypatch.setattr(filterlist_apply, "block_artists", _block)
+    monkeypatch.setattr(curation, "block_artists", _block)
+    monkeypatch.setattr(cli_module, "get_session", lambda profile: object())
+
+    result = CliRunner().invoke(app, ["block", "--from-list", "one", "999", "--force"])
+
+    assert result.exit_code == 1
+    assert "block failed 999" in result.output
+    assert "Blocked artist 111" in result.output, "a completed write must be reported"
+    assert "Blocked artist 222" in result.output, "a completed write must be reported"

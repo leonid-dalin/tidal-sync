@@ -26,8 +26,21 @@ from __future__ import annotations
 
 from rich.console import Console
 
+from .domain.results import UploadOutcome
+
 console = Console()
 
 # Threshold above which a destructive batch asks the operator to retype
 # the profile name. Ten is the figure specified in plan-v2 Task 6.
 BLOCK_RAIL_THRESHOLD = 10
+
+
+def _report_outcome(outcome: UploadOutcome | None, applied: str, rejected: str) -> int:
+    """Single reporter for both directions so block and unblock output cannot diverge."""
+    if outcome is None:
+        return 0
+    for tid in outcome.applied:
+        console.print(f"  [green]{applied} {tid}[/green]")
+    for tid in outcome.rejected:
+        console.print(f"  [red]{rejected} {tid}[/red]")
+    return len(outcome.rejected)

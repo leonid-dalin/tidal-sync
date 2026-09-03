@@ -27,15 +27,32 @@ sits here: a format hint selects the parser, and anything else is a
 
 from __future__ import annotations
 
-import tempfile
-from collections.abc import Iterable
-from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import orjson
 
+from ..domain.exceptions import BackupFileError
 from ..domain.models import ArtistRow
-from .parser import extract_tidal_id, parse_csv
+from .parser import extract_tidal_id, parse_csv_text
+
+SUPPORTED_FORMATS: tuple[str, ...] = ("txt", "csv", "json")
+
+
+def detect_format(source: str) -> str:
+    """Return the lowercase extension of ``source`` taken from its URL path.
+
+    The query string is intentionally ignored: a cache-busting ``?v=2``
+    suffix must not change the detected format. Raises ``FormatError``
+    when ``source`` carries no extension, so the caller does not have
+    to repeat that check.
+    """
+    parsed = urlparse(source)
+    path = parsed.path or source
+    dot = path.rfind(".")
+    if dot == -1 or dot == len(path) - 1:
+        raise FormatError(f"cannot detect format: source {source!r} has no extension")
+    return path[dot + 1 :].lower()
 
 
 class FormatError(Exception):
@@ -46,58 +63,69 @@ class FormatError(Exception):
     """
 
 
+def _validated_id(raw: str, where: str) -> str:
+    """Resolve one reference to a bare Tidal id, or raise FormatError.
+
+    Every format runs through here. The txt parser always did; csv and
+    json did not, which let an arbitrary string reach the network layer,
+    where unblock_artists interpolates an id into the request path.
+    """
+    try:
+        return extract_tidal_id(raw)
+    except ValueError as exc:
+        raise FormatError(f"{where}: {exc}") from exc
+
+
 def _parse_txt(data: bytes) -> list[tuple[str, str]]:
-    """Decodes bytes line by line, skipping blanks and ``#`` comments."""
-    text = data.decode("utf-8")
+    """Decode lines, skipping blanks and ``#`` comments.
+
+    utf-8-sig, not utf-8: a leading BOM is invisible to the operator and
+    would otherwise fail line 1 of any list saved by a Windows editor.
+    """
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise FormatError(f"source is not valid UTF-8: {exc}") from exc
     pairs: list[tuple[str, str]] = []
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        try:
-            tidal_id = extract_tidal_id(stripped)
-        except ValueError as exc:
-            raise FormatError(f"line {line_number}: {exc}") from exc
-        pairs.append((tidal_id, ""))
+        pairs.append((_validated_id(stripped, f"line {line_number}"), ""))
     return pairs
-
-
-def _coerce_artist_row(row: ArtistRow) -> tuple[str, str] | None:
-    """Maps an ``ArtistRow`` to a pair, dropping rows with no id."""
-    tidal_id = row.tidal_id
-    if tidal_id is None or tidal_id == "":
-        return None
-    return (tidal_id, row.artist_name)
 
 
 def _parse_csv(data: bytes) -> list[tuple[str, str]]:
-    """Writes bytes to a temp file and reuses ``parse_csv`` + ``ArtistRow``."""
-    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="wb") as tmp:
-        tmp.write(data)
-        tmp_path = Path(tmp.name)
+    """Validate CSV bytes through the shared ArtistRow reader."""
     try:
-        rows: Iterable[ArtistRow] = parse_csv(tmp_path, ArtistRow)
-    finally:
-        tmp_path.unlink(missing_ok=True)
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise FormatError(f"source is not valid UTF-8: {exc}") from exc
+    try:
+        rows = parse_csv_text(text, ArtistRow, "filter list")
+    except (BackupFileError, ValueError) as exc:
+        raise FormatError(str(exc)) from exc
+    return [
+        (_validated_id(row.tidal_id, f"row {index}"), row.artist_name)
+        for index, row in enumerate(rows, start=1)
+        if row.tidal_id
+    ]
 
-    pairs: list[tuple[str, str]] = []
-    for row in rows:
-        coerced = _coerce_artist_row(row)
-        if coerced is not None:
-            pairs.append(coerced)
-    return pairs
 
-
-def _coerce_json_entry(entry: Any) -> tuple[str, str]:
+def _coerce_json_entry(entry: Any, index: int) -> tuple[str, str]:
     """Reduces a JSON list element to ``(tidal_id, name)``.
 
     String entries become ``(id, "")``; dict entries must carry a string
     ``tidal_id`` and an optional ``artist_name``. Anything else is a
     ``FormatError``: ids are strings, and silent coercion would let
     upstream code accept shapes the rest of the engine does not expect.
+
+    The returned id is run through ``_validated_id`` so an arbitrary
+    string in a list element cannot reach the network layer, where
+    ``unblock_artists`` interpolates it into a request path.
     """
     if isinstance(entry, str):
-        return (entry, "")
+        return (_validated_id(entry, f"entry {index}"), "")
 
     if not isinstance(entry, dict):
         raise FormatError(f"json entry must be a string or object, got {type(entry).__name__}")
@@ -112,7 +140,7 @@ def _coerce_json_entry(entry: Any) -> tuple[str, str]:
     if not isinstance(name_value, str):
         raise FormatError("json object entry 'artist_name' must be a string when present")
 
-    return (raw_id, name_value)
+    return (_validated_id(raw_id, f"entry {index}"), name_value)
 
 
 def _parse_json(data: bytes) -> list[tuple[str, str]]:
@@ -129,9 +157,10 @@ def _parse_json(data: bytes) -> list[tuple[str, str]]:
     except orjson.JSONDecodeError as exc:
         raise FormatError(f"json decode failed: {exc}") from exc
     if not isinstance(decoded, list):
-        kind = type(decoded).__name__
-        raise FormatError(f"json filter list must be a top-level array, got {kind}")
-    return [_coerce_json_entry(entry) for entry in decoded]
+        raise FormatError(
+            f"json filter list must be a top-level array, got {type(decoded).__name__}"
+        )
+    return [_coerce_json_entry(entry, index) for index, entry in enumerate(decoded, start=1)]
 
 
 def parse_filter_list(data: bytes, fmt: str) -> list[tuple[str, str]]:
@@ -144,3 +173,6 @@ def parse_filter_list(data: bytes, fmt: str) -> list[tuple[str, str]]:
     if normalised == "json":
         return _parse_json(data)
     raise FormatError(f"unsupported filter-list format: {fmt!r}")
+
+
+__all__ = ["FormatError", "SUPPORTED_FORMATS", "detect_format", "parse_filter_list"]

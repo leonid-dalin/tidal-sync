@@ -22,6 +22,7 @@ dev = [
     "pytest-cov>=6.0.0",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
@@ -45,6 +46,11 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "live: exercises a real Tidal account; excluded by default",
+    "write: mutates the live account; excluded unless run_writes is set",
+]
+addopts = "-m 'not live'"
 
 # Non-blocking: reports type gaps without failing the build. After the
 # package layout was fixed and the TidalUser protocol gained create_playlist,

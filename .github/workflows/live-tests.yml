@@ -1,0 +1,78 @@
+name: Live tests
+# The live path reads a throwaway Tidal account using a token stored as an
+# environment secret. workflow_dispatch is the ONLY trigger: there is no
+# push, pull_request or schedule, because any other trigger would expose
+# the token to forks or pull-request branches.
+#
+# The `live` environment must be created in repository settings with `main`
+# as the only permitted branch and the maintainer as the required reviewer.
+# Environment protection rules cannot be expressed in YAML, so this comment
+# is the contract.
+on:
+  workflow_dispatch:
+    inputs:
+      account_profile:
+        description: Tidal profile name to materialise under ~/.tidal_sync
+        type: string
+        default: test_acc
+      run_writes:
+        description: Run write-marked tests in addition to read-only tests
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    environment: live
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install -e '.[dev]'
+      - name: Validate the profile name
+        env:
+          ACCOUNT_PROFILE: ${{ inputs.account_profile }}
+        run: |
+          # Same character set auth.py enforces for profile names. A dispatch
+          # input must never reach a path unvalidated. Double quotes here are
+          # load-bearing: single quotes would compare the literal text.
+          case "$ACCOUNT_PROFILE" in
+            *[!A-Za-z0-9_.-]*|""|.*)
+              echo "::error::refusing profile name: $ACCOUNT_PROFILE"
+              exit 1
+              ;;
+          esac
+
+      - name: Materialise the throwaway token
+        env:
+          ACCOUNT_PROFILE: ${{ inputs.account_profile }}
+          TIDAL_LIVE_TOKEN_JSON: ${{ secrets.TIDAL_LIVE_TOKEN_JSON }}
+        run: |
+          umask 077
+          mkdir -p "$HOME/.tidal_sync"
+          printf '%s' "$TIDAL_LIVE_TOKEN_JSON" > "$HOME/.tidal_sync/$ACCOUNT_PROFILE.json"
+
+      - name: Run live tests
+        env:
+          ACCOUNT_PROFILE: ${{ inputs.account_profile }}
+          RUN_WRITES: ${{ inputs.run_writes }}
+        run: |
+          set -o pipefail
+          if [ "$RUN_WRITES" = "true" ]; then
+            marker="live"
+          else
+            marker="live and not write"
+          fi
+          TIDAL_TEST_PROFILE="$ACCOUNT_PROFILE" \
+            pytest -m "$marker" -p no:cacheprovider -rA 2>&1 | tee live-output.txt
+
+      - name: Report an abuse lock
+        if: failure()
+        run: |
+          # Only inspected on a failing run, so a passing suite whose test
+          # names mention the word cannot be turned red by this grep.
+          if grep -Eqi '11003|abuse' live-output.txt; then
+            echo "::error::the live account abuse lock engaged (1800s); wait before retrying"
+          fi

@@ -488,9 +488,9 @@ def _run_block_with_lists(
 @app.command()
 def block(
     ids: Annotated[
-        list[str],
-        typer.Argument(help="One or more artist ids or Tidal share URLs", default_factory=list),
-    ],
+        list[str] | None,
+        typer.Argument(help="One or more artist ids or Tidal share URLs"),
+    ] = None,
     profile: Annotated[
         str, typer.Option("--profile", "-p", help="Which account profile to block on")
     ] = "default",
@@ -519,6 +519,9 @@ def block(
     list ids is sent through the apply engine; the rail still fires on
     the union length, matching ``blocklist apply``.
     """
+    ids = ids or []
+    if from_list is None and all_from is None and not ids:
+        raise typer.BadParameter("give at least one id, or use --from-list or --all-from")
     if from_list is None and all_from is None:
         _run_block_command(
             profile=profile,

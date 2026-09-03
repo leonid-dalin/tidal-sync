@@ -30,6 +30,10 @@ from tidal_sync.engine.filterlist_store import Subscription
 runner = CliRunner()
 
 _BLOCKLIST_SUBCOMMANDS = ("add", "remove", "update", "show", "apply")
+# ``show`` and ``remove`` no longer accept --profile (Task 13):
+# they touch no account, so the option is gone rather than silently
+# accepted. The other three keep it for parity.
+_BLOCKLIST_SUBCOMMANDS_WITH_PROFILE = ("add", "update", "apply")
 
 
 class _FakeUser:
@@ -66,8 +70,9 @@ def test_blocklist_subcommand_help_works(subcommand: str) -> None:
     assert "Usage:" in result.output
 
 
-# Test 2: --profile / -p is accepted by every subcommand.
-@pytest.mark.parametrize("subcommand", _BLOCKLIST_SUBCOMMANDS)
+# Test 2: --profile / -p is accepted by every subcommand that touches
+# an account. ``show`` and ``remove`` drop the option (Task 13).
+@pytest.mark.parametrize("subcommand", _BLOCKLIST_SUBCOMMANDS_WITH_PROFILE)
 def test_blocklist_subcommand_accepts_profile_flag_long(
     monkeypatch: pytest.MonkeyPatch, subcommand: str
 ) -> None:
@@ -91,8 +96,6 @@ def test_blocklist_subcommand_accepts_profile_flag_long(
     args: list[str] = ["blocklist", subcommand, "--profile", "second"]
     if subcommand == "add":
         args += ["spam", "https://example.test/list.txt"]
-    elif subcommand == "remove":
-        args += ["spam"]
 
     result = runner.invoke(app, args)
     # A missing required argument (e.g. update without a name still parses,
@@ -103,7 +106,7 @@ def test_blocklist_subcommand_accepts_profile_flag_long(
     assert "--profile" not in result.output or "Usage" in result.output
 
 
-@pytest.mark.parametrize("subcommand", _BLOCKLIST_SUBCOMMANDS)
+@pytest.mark.parametrize("subcommand", _BLOCKLIST_SUBCOMMANDS_WITH_PROFILE)
 def test_blocklist_subcommand_accepts_profile_flag_short(
     monkeypatch: pytest.MonkeyPatch, subcommand: str
 ) -> None:
@@ -127,8 +130,6 @@ def test_blocklist_subcommand_accepts_profile_flag_short(
     args: list[str] = ["blocklist", subcommand, "-p", "second"]
     if subcommand == "add":
         args += ["spam", "https://example.test/list.txt"]
-    elif subcommand == "remove":
-        args += ["spam"]
 
     result = runner.invoke(app, args)
     assert "no such option" not in result.output.lower()
@@ -524,6 +525,42 @@ def test_blocklist_remove_and_show_round_trip_after_fixed_add(
     remove_result = runner.invoke(app, ["blocklist", "remove", "kpop"])
     assert remove_result.exit_code == 0, remove_result.output
     assert removed == ["kpop"]
+
+
+# ---------------------------------------------------------------------------
+# Task 13: ``show`` and ``remove`` no longer accept --profile.
+#
+# Background: --profile was accepted-and-ignored on every blocklist
+# subcommand. The maintainer's call is to drop it from the two that
+# touch no account at all (``show`` and ``remove``); ``add``,
+# ``update`` and ``apply`` keep it for parity while the surface
+# still mentions accounts in their docstrings. Drop the option
+# outright, do not merely relabel it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("subcommand", ("show", "remove"))
+def test_blocklist_show_and_remove_reject_profile_flag(
+    monkeypatch: pytest.MonkeyPatch, subcommand: str
+) -> None:
+    """``--profile`` on ``show`` and ``remove`` must surface as ``no such option``.
+
+    The two subcommands touch no account, so the flag is gone rather
+    than silently accepted. ``add``, ``update`` and ``apply`` still
+    take it for parity, so they are not in this parametrize list.
+    """
+    monkeypatch.setattr(cli_blocklist, "load_subscriptions", lambda: [])
+    monkeypatch.setattr(cli_blocklist, "remove_subscription", lambda name: True)
+
+    args: list[str] = ["blocklist", subcommand, "--profile", "second"]
+    if subcommand == "remove":
+        args += ["spam"]
+
+    result = runner.invoke(app, args)
+
+    assert "no such option" in result.output.lower() or result.exit_code == 2, (
+        f"--profile must not be accepted on blocklist {subcommand}, got: {result.output}"
+    )
 
 
 # ---------------------------------------------------------------------------

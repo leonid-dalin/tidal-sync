@@ -22,6 +22,7 @@ from tests.fakes import FakeSession, fake_subscription
 from tidal_sync import cli_blocklist
 from tidal_sync.cli import app
 from tidal_sync.domain.results import UploadOutcome
+from tidal_sync.engine import curation
 from tidal_sync.engine.filterlist import FormatError, parse_filter_list
 from tidal_sync.engine.filterlist_apply import ApplyOutcome, ApplyPlan
 from tidal_sync.engine.filterlist_fetch import FetchError
@@ -248,7 +249,49 @@ def test_blocklist_apply_force_skips_unblock_prompt(
     assert unblock_calls == [["998", "997"]], "execute_apply must handle the unblock under --prune"
 
 
-# Test 6: an unsupported extension is rejected at add, not at apply.
+# Test 6: an oversized prune batch is refused through the shared handler,
+# not by a traceback. --prune is the only bulk path to unblock_artists.
+
+
+def test_an_oversized_prune_is_refused_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tidal_sync.engine.curation import MAX_APPLY_IDS
+
+    written: list[list[str]] = []
+
+    monkeypatch.setattr(
+        cli_blocklist, "load_subscriptions", lambda: [fake_subscription(name="spam")]
+    )
+    monkeypatch.setattr(cli_blocklist, "get_session", lambda profile="default": FakeSession())
+
+    async def _plan_apply(session: object, subs: list[Subscription], **_: object) -> ApplyPlan:
+        return ApplyPlan(
+            to_block=[],
+            already_blocked=[],
+            unlisted=[(str(300000 + i), "") for i in range(MAX_APPLY_IDS + 1)],
+            errors=[],
+        )
+
+    async def _apply_per_id(ids: list[str], action: object, label: str) -> UploadOutcome:
+        written.append(list(ids))
+        return UploadOutcome(applied=list(ids), rejected=[])
+
+    monkeypatch.setattr(cli_blocklist, "plan_apply", _plan_apply)
+    # Fake the per-id writer, not unblock_artists, so the guard under
+    # test is the real one. Patching the verb would stub it away.
+    monkeypatch.setattr(curation, "_apply_per_id", _apply_per_id)
+
+    # execute_apply stays real, so the whole prune path runs as shipped.
+    result = runner.invoke(app, ["blocklist", "apply", "--prune", "--force"])
+
+    assert result.exit_code == 1, result.output
+    assert written == [], f"an oversized prune must write nothing, got {len(written)} calls"
+    assert "could not complete" in result.output
+    assert str(MAX_APPLY_IDS) in result.output
+
+
+# Test 7: an unsupported extension is rejected at add, not at apply.
 def test_blocklist_add_rejects_unsupported_extension_at_add_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

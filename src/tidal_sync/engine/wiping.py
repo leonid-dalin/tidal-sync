@@ -31,15 +31,13 @@ from typing import Any, cast
 
 import tidalapi
 from loguru import logger
-from rich.console import Console
 
 from ..domain.enums import ClearTarget
 from ..domain.protocols import TidalUser
 from .folders import fetch_v2_folders, remove_folder
 from .network import execute_network, fetch_all_async, fetch_blocked_artists
+from .output import console
 from .workers import run_headless_tasks_async
-
-console = Console()
 
 
 @dataclass

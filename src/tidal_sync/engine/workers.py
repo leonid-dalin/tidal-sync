@@ -29,10 +29,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
-console = Console()
+from .output import console
+
 MAX_CONCURRENCY = 10
 
 

@@ -31,11 +31,11 @@ from typing import Any, cast
 
 import tidalapi
 from loguru import logger
-from rich.console import Console
 
 from ..domain.protocols import TidalUser
 from .folders import build_playlist_folder_map
 from .network import execute_network, fetch_all_async, fetch_blocked_artists
+from .output import console
 from .parser import (
     UniquePathAllocator,
     normalises_playlist_id,
@@ -44,8 +44,6 @@ from .parser import (
     write_tracks_csv_sync,
 )
 from .workers import run_headless_tasks_async
-
-console = Console()
 
 
 async def fetch_and_serialise_tracks(
